@@ -1,0 +1,5 @@
+# Keep learning-item classification non-blocking and reversible
+
+Saving must not interrupt the Reading Flow with a classification decision. Lingo Palette automatically joins an Encounter only when its normalized expression matches and both the new Encounter and existing Learning Item are pinned to the same source sense ID in the same Evidence Pack version. Missing sense evidence, uncovered phrases, different senses, and uncertainty create a separate Learning Item. Background model classification may then create a Merge Suggestion, shown later in Saved with both contexts and explicit Merge or Keep separate choices. Every merge preserves Encounter identity and provenance and remains undoable.
+
+An Encounter receives an automatic source sense ID only when Evidence Pack lookup by normalized expression, morphology, and part of speech leaves exactly one eligible sense. Zero or multiple eligible senses remain unpinned. A background model may use those candidates to explain a Merge Suggestion but can never authorize automatic merge by choosing a sense itself.

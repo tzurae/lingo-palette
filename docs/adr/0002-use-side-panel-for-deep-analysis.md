@@ -1,0 +1,3 @@
+# Use the side panel for deep analysis and history
+
+Keep the anchored selection surface compact and open Chrome's Side Panel for persistent, detailed work. The Side Panel uses Current, Recent, and Saved tabs: Current contains the deep analysis the learner explicitly opened, Recent exposes lookup records, and Saved exposes learning items. A new selection may produce a Quick Hint without replacing Current; Current changes only when the learner requests deep analysis for that selection, preserving work already in view. This separates transient reading assistance from durable learning while avoiding a large overlay that obscures the page.

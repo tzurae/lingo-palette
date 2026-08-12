@@ -1,0 +1,58 @@
+:root {
+  font: 16px/1.5 system-ui, sans-serif;
+  color: #172033;
+  background: #f8fafc;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  box-sizing: border-box;
+  width: min(720px, 100%);
+  margin: 0 auto;
+  padding: 32px 20px;
+}
+
+section {
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid #94a3b8;
+  border-radius: 12px;
+  background: white;
+}
+
+ul {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  overflow-wrap: anywhere;
+}
+
+button,
+a {
+  min-height: 36px;
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #f59e0b;
+  outline-offset: 3px;
+}
+
+@media (forced-colors: active) {
+  section,
+  button {
+    border: 2px solid ButtonText;
+  }
+}

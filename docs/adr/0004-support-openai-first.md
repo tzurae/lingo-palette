@@ -1,0 +1,9 @@
+# Support OpenAI first behind a provider boundary
+
+The first release supports only OpenAI's official API, matching the initial learner's needs and avoiding premature normalization of incompatible model, effort, streaming, and structured-output semantics. Provider-specific behavior remains behind a provider boundary so another official provider can be added later without changing actions or learning concepts; arbitrary OpenAI-compatible endpoints are outside the initial contract.
+
+The default model is the reproducible `gpt-5.4-mini-2026-03-17` snapshot, with `gpt-5.4-nano-2026-03-17` as the curated lower-cost option. An advanced setting accepts an exact model ID from OpenAI's official API without silently rewriting it. A custom model with unknown pricing is token-budgeted only; an unsupported Responses API, Structured Outputs, or reasoning-effort capability produces an explicit incompatibility state rather than a fallback.
+
+Reasoning effort is configured by workload rather than as one global value: Quick Hint defaults to `low`, Deep Dive defaults to `medium`, and background Review Generation and evaluation default to `medium`. Curated models expose only their documented effort values. A custom model uses the exact configured value and surfaces incompatibility if OpenAI rejects it; the extension never silently lowers or changes effort.
+
+A Custom OpenAI model becomes active only through an explicit Test and activate operation. It reserves foreground tokens and sends a minimal strict JSON-schema Responses request for every distinct configured effort, displaying provider-reported usage. All probes must succeed before the configuration switches atomically; otherwise the prior active configuration remains and the exact incompatibility is shown. Later runtime incompatibility also fails explicitly without model or effort fallback.

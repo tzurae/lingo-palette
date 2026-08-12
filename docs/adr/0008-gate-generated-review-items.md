@@ -1,0 +1,3 @@
+# Gate generated review items before use
+
+Generated review content passes through one deep review-generation module that either returns an approved review item or a rejection; callers never receive an unchecked candidate. The harness validates grounding, answerability, alternative answers, linguistic accuracy, construct validity, distractor safety, and corrective explanation using deterministic checks, source evidence, model evaluation, and regression cases, while a feedback loop turns learner reports and discovered failures into permanent evaluations. Failed contrastive items fall back to a safer grounded recall or completion task, and items without a safe fallback are skipped and regenerated, favoring correctness over review coverage.

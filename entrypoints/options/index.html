@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lingo Palette 設定</title>
+  </head>
+  <body>
+    <main>
+      <h1>Lingo Palette 設定</h1>
+      <section aria-labelledby="sites-title">
+        <h2 id="sites-title">已啟用的網站</h2>
+        <p>只有你個別啟用的網站可以顯示選取工具。</p>
+        <ul id="enabled-sites"></ul>
+        <p id="sites-status" role="status" aria-live="polite"></p>
+      </section>
+      <section aria-labelledby="command-title">
+        <h2 id="command-title">鍵盤指令</h2>
+        <p id="command-binding"></p>
+        <a href="chrome://extensions/shortcuts" id="command-settings">管理 Chrome 擴充功能快速鍵</a>
+      </section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,3 @@
+# Start local-first behind a replaceable storage boundary
+
+The first release stores learning data locally while keeping domain behavior independent of Chrome's storage APIs. Domain records use stable device-independent identifiers and a versioned data format, and a versioned export/import flow provides portable backups without including API keys. The release does not prebuild accounts, cloud APIs, synchronization queues, or conflict resolution; a future cloud design can add a storage implementation once its ownership and synchronization semantics are known, while API keys remain device-local by default.

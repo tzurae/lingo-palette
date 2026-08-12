@@ -1,0 +1,3 @@
+# Use Apache-2.0 with maintainer-led governance
+
+When Lingo Palette is published, its original code and documentation use Apache License 2.0, providing permissive redistribution plus an explicit patent grant, while Evidence Packs and other third-party assets retain their own licenses, attribution, and NOTICE material and are never relicensed as project code. Governance begins maintainer-led with contributions submitted under the project license and no CLA; public contribution, conduct, and security-reporting policies are added at publication. Cloud accounts and synchronization remain deferred and require a separate design and ADR once multiple-user needs are observed; API keys stay device-local regardless.

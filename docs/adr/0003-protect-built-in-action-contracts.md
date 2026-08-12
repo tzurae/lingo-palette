@@ -1,0 +1,5 @@
+# Protect built-in action contracts
+
+Lingo Palette owns the core task and output contract of built-in actions so Quick Hint and Deep Dive remain renderable and behaviorally stable. Learners may add Personal Instructions without replacing those contracts. Custom Action authoring, management, invocation, and free-form output are outside the first release. A later Custom Action may retain a result in its Lookup Record or attach it to a Learning Item as a Learner Note, but it cannot alter Knowledge Dimensions, Review Evidence, scheduling, or Review Items unless a structured result passes the same Review Generation harness.
+
+Personal Instructions are limited to 4,000 Unicode code points and apply only to Quick Hint and Deep Dive beneath the extension-owned purpose and schema. They never affect Learning, Review Generation or validation, Evidence Packs, budgets, retry, model capability probes, or Pronunciation Playback. Settings rejects an over-limit value with its measured length and never truncates it.
