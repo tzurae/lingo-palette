@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chromium } from 'playwright-core';
 import type { BrowserContext, Frame, Page, Worker } from 'playwright-core';
+import { scriptIdFor } from './modules/reading-flow/site-permission';
 
 declare const chrome: typeof browser;
 
@@ -27,15 +28,15 @@ beforeAll(async () => {
     if (request.url === '/frame') {
       response.end(`<!doctype html><html><body>
         <button id="frame-position">Frame reading position</button>
-        <p id="frame-copy">They agreed to postpone the vote until next week.</p>
+        <p id="frame-copy" tabindex="0">They agreed to postpone the vote until next week.</p>
       </body></html>`);
       return;
     }
 
-    response.end(`<!doctype html><html><body>
+    response.end(`<!doctype html><html><head><title>Lingo Palette Browser Test</title></head><body>
       <main>
         <button id="reading-position">Reading position</button>
-        <p id="copy">The committee decided to postpone the vote until next week.</p>
+        <p id="copy" tabindex="0">The committee decided to postpone the vote until next week.</p>
         <p id="long-copy">${'word '.repeat(4_100)}</p>
         <div style="height: 1200px"></div>
         <p id="edge-copy" style="text-align: right">They will postpone the edge case.</p>
@@ -86,16 +87,17 @@ beforeAll(async () => {
       `--load-extension=${extensionPath}`,
       '--no-first-run',
       '--no-default-browser-check',
+      '--enable-caret-browsing',
     ],
   });
   
   worker =
     context.serviceWorkers()[0] ??
     (await context.waitForEvent('serviceworker'));
-  await worker.evaluate(async (siteOrigin) => {
+  await worker.evaluate(async ([siteOrigin, scriptId]) => {
     await chrome.scripting.registerContentScripts([
       {
-        id: 'reading-flow-browser-test',
+        id: scriptId,
         js: ['/reading-flow.js'],
         matches: [`${siteOrigin}/*`],
         allFrames: true,
@@ -109,7 +111,7 @@ beforeAll(async () => {
         explanationCue: '延後原本安排的事情',
       },
     });
-  }, origin);
+  }, [origin, scriptIdFor(origin)] as const);
   page = await context.newPage();
   await page.goto(origin);
 }, 60_000);
@@ -132,29 +134,12 @@ describe('unpacked extension Reading Flow', () => {
     expect(access.granted).toBe(true);
     expect(access.manifest.host_permissions).not.toContain('http://*/*');
     expect(access.manifest.host_permissions).not.toContain('https://*/*');
-    const probePage = await context.newPage();
-    await probePage.goto(`${extensionOriginFrom(worker)}/options.html`);
-    const controlledResponse = await probePage.evaluate(() =>
-      chrome.runtime.sendMessage({
-        type: 'quick-hint',
-        selection: {
-          text: 'postpone',
-          context: { before: 'to ', after: ' the vote' },
-        },
-      }),
+
+
+    const selectionAt = await selectTextByPointer(page, '#copy', 'postpone');
+    const focusAfterSelection = await page.evaluate(
+      () => document.activeElement?.id,
     );
-    await probePage.close();
-    if (controlledResponse.status === 'failed') {
-      throw new Error(controlledResponse.message);
-    }
-    expect(controlledResponse).toMatchObject({
-      status: 'completed',
-      result: { simplerExpression: 'delay until a later time' },
-    });
-
-
-    await page.locator('#reading-position').focus();
-    const selectionAt = await selectText(page, '#copy', 'postpone');
     await expect
       .poll(() =>
         page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
@@ -167,31 +152,67 @@ describe('unpacked extension Reading Flow', () => {
     );
     expect(visibleAt - selectionAt).toBeGreaterThanOrEqual(0);
     expect(visibleAt - selectionAt).toBeLessThanOrEqual(250);
+    expect(focusAfterSelection).toBe('copy');
     expect(await page.evaluate(() => document.activeElement?.id)).toBe(
-      'reading-position',
+      focusAfterSelection,
     );
 
-    await page.getByRole('button', { name: '快速提示' }).click();
+    const quickHintButton = page.getByRole('button', { name: '快速提示' });
+    await quickHintButton.click();
     await expect
       .poll(() => page.getByRole('status').textContent())
       .toBe('快速提示已完成。');
+    expect(
+      await quickHintButton.evaluate(
+        (button) =>
+          button === (button.getRootNode() as ShadowRoot).activeElement,
+      ),
+    ).toBe(true);
     await expect
       .poll(() => page.getByText('delay until a later time').isVisible())
       .toBe(true);
     await expect
       .poll(() => page.getByText('延後原本安排的事情').isVisible())
       .toBe(true);
+    const providerRequest = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get('quickHintTestRequest');
+      return stored.quickHintTestRequest;
+    });
+    expect(providerRequest).toEqual({
+      text: 'postpone',
+      context: {
+        before: expect.stringMatching(/The committee decided to $/),
+        after: expect.stringMatching(/^ the vote until next week\./),
+      },
+    });
   });
 
   it('reports an over-limit Selection without truncating or enabling Quick Hint', async () => {
     await selectNodeContents(page, '#long-copy');
+    const measuredLength = await page.evaluate(
+      () => Array.from(document.getSelection()?.toString() ?? '').length,
+    );
+    expect(measuredLength).toBeGreaterThan(4_000);
 
     await expect
-      .poll(() => page.getByText(/超過 4,000 個字元/).isVisible())
+      .poll(() =>
+        page
+          .getByText(
+            new RegExp(
+              `選取內容有 ${measuredLength.toLocaleString('en-US')} 個字元，超過 4,000 個字元上限`,
+            ),
+          )
+          .isVisible(),
+      )
       .toBe(true);
     await expect
       .poll(() => page.getByRole('button', { name: '快速提示' }).isDisabled())
       .toBe(true);
+    expect(
+      await page.evaluate(
+        () => Array.from(document.getSelection()?.toString() ?? '').length,
+      ),
+    ).toBe(measuredLength);
   });
 
   it('keeps the anchored surface in view at page edges, after scroll, and at 200% zoom', async () => {
@@ -201,7 +222,7 @@ describe('unpacked extension Reading Flow', () => {
       [tabId, 2] as const,
     );
     await page.locator('#edge-copy').scrollIntoViewIfNeeded();
-    await selectText(page, '#edge-copy', 'postpone');
+    await selectTextByPointer(page, '#edge-copy', 'postpone');
     await expect
       .poll(() =>
         page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
@@ -220,10 +241,36 @@ describe('unpacked extension Reading Flow', () => {
   it('supports keyboard entry and Escape focus restoration in a same-origin frame', async () => {
     const frame = page.frames().find((candidate) => candidate.url().endsWith('/frame'));
     if (frame === undefined) throw new Error('Expected the same-origin frame.');
-    await page.evaluate(() => document.getSelection()?.removeAllRanges());
-    await frame.locator('#frame-position').focus();
-    await selectText(frame, '#frame-copy', 'postpone');
-
+    await frame.locator('#frame-copy').focus();
+    const selectionAt = await selectTextByKeyboard(
+      frame,
+      '#frame-copy',
+      'postpone',
+    );
+    expect(await frame.evaluate(() => document.getSelection()?.toString())).toBe(
+      'postpone',
+    );
+    expect(await frame.evaluate(() => document.activeElement?.id)).toBe(
+      'frame-copy',
+    );
+    await expect
+      .poll(() =>
+        frame.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
+      )
+      .toBe(true);
+    const visibleAt = Number(
+      await frame
+        .locator('[data-lingo-palette-reading-flow]')
+        .getAttribute('data-visible-at'),
+    );
+    expect(visibleAt - selectionAt).toBeGreaterThanOrEqual(0);
+    expect(visibleAt - selectionAt).toBeLessThanOrEqual(250);
+    const shortcut = await worker.evaluate(async () => {
+      const commands = await chrome.commands.getAll();
+      return commands.find(({ name }) => name === 'focus-selection-toolbar')
+        ?.shortcut;
+    });
+    expect(shortcut).toBe('Ctrl+Shift+Y');
     const activeTabId = await activeReadingTabId();
     await worker.evaluate(async (tabId) => {
       await chrome.scripting.executeScript({
@@ -234,6 +281,11 @@ describe('unpacked extension Reading Flow', () => {
           ),
       });
     }, activeTabId);
+    await expect
+      .poll(() =>
+        frame.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
+      )
+      .toBe(true);
     await expect
       .poll(() =>
         frame.getByRole('button', { name: '快速提示' }).evaluate(
@@ -254,9 +306,9 @@ describe('unpacked extension Reading Flow', () => {
         frame.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).count(),
       )
       .toBe(0);
-    expect(
-      await frame.evaluate(() => document.activeElement?.id),
-    ).toBe('frame-position');
+    expect(await frame.evaluate(() => document.activeElement?.id)).toBe(
+      'frame-copy',
+    );
   });
 
   it('shows the Enabled Site and actual command state in Settings', async () => {
@@ -314,26 +366,59 @@ async function assertSurfaceInsideViewport(): Promise<void> {
 
 
 
-async function selectText(
+
+async function selectTextByPointer(
+  pageTarget: Page,
+  selector: string,
+  text: string,
+): Promise<number> {
+  const points = await pageTarget.locator(selector).evaluate(
+    (element, selectedText) => {
+      const node = element.firstChild;
+      if (!(node instanceof Text)) throw new Error('Expected a text node.');
+      const start = node.data.indexOf(selectedText);
+      if (start < 0) throw new Error(`Could not select ${selectedText}.`);
+      const range = element.ownerDocument.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + selectedText.length);
+      const rect = range.getBoundingClientRect();
+      return {
+        start: { x: rect.left + 1, y: rect.top + rect.height / 2 },
+        end: { x: rect.right - 1, y: rect.top + rect.height / 2 },
+      };
+    },
+    text,
+  );
+  await pageTarget.mouse.move(points.start.x, points.start.y);
+  await pageTarget.mouse.down();
+  await pageTarget.mouse.move(points.end.x, points.end.y, { steps: 8 });
+  const selectionAt = await pageTarget.evaluate(() => performance.now());
+  await pageTarget.mouse.up();
+  return selectionAt;
+}
+
+async function selectTextByKeyboard(
   target: Page | Frame,
   selector: string,
   text: string,
 ): Promise<number> {
-  return target.locator(selector).evaluate((element, selectedText) => {
-    const selectionAt = performance.now();
-    const node = element.firstChild;
-    if (!(node instanceof Text)) throw new Error('Expected a text node.');
-    const start = node.data.indexOf(selectedText);
-    if (start < 0) throw new Error(`Could not select ${selectedText}.`);
-    const selection = element.ownerDocument.getSelection();
-    const range = element.ownerDocument.createRange();
-    range.setStart(node, start);
-    range.setEnd(node, start + selectedText.length);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-    return selectionAt;
-  }, text);
+  const locator = target.locator(selector);
+  const content = await locator.textContent();
+  if (content === null) throw new Error(`Expected text in ${selector}.`);
+  const start = content.indexOf(text);
+  if (start < 0) throw new Error(`Could not select ${text}.`);
+  await locator.focus();
+  await target.press(selector, 'Home');
+  for (let index = 0; index < start; index += 1) {
+    await target.press(selector, 'ArrowRight');
+  }
+  const codePoints = Array.from(text);
+  for (let index = 0; index < codePoints.length - 1; index += 1) {
+    await target.press(selector, 'Shift+ArrowRight');
+  }
+  const selectionAt = await target.evaluate(() => performance.now());
+  await target.press(selector, 'Shift+ArrowRight');
+  return selectionAt;
 }
 
 async function selectNodeContents(pageTarget: Page, selector: string): Promise<void> {

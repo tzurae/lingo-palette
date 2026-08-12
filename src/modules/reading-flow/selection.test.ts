@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-  boundReadingContext,
-  codePointLength,
-  fitAnchoredSurface,
-} from './selection';
+import { fitAnchoredSurface } from './anchored-surface';
+import { boundReadingContext, codePointLength } from './selection';
 
 describe('Reading Flow selection boundaries', () => {
   it('measures Unicode code points rather than UTF-16 code units', () => {

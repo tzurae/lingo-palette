@@ -1,5 +1,5 @@
-import type { Selection } from '../assistance/generation-port';
-import type { QuickHint } from './quick-hint-provider';
+import type { QuickHintResult } from './quick-hint';
+import type { Selection } from './selection';
 
 export type EnableSiteRequest = {
   type: 'enable-site';
@@ -27,5 +27,5 @@ export type EnableSiteResponse = {
 };
 
 export type QuickHintResponse =
-  | { status: 'completed'; result: QuickHint }
+  | { status: 'completed'; result: QuickHintResult }
   | { status: 'failed'; message: string };

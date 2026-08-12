@@ -1,5 +1,8 @@
 import { revokeEnabledSite } from '../../src/modules/reading-flow/site-access';
-import { originFromMatchPattern } from '../../src/modules/reading-flow/site-permission';
+import {
+  isEnabledSiteScriptId,
+  originFromMatchPattern,
+} from '../../src/modules/reading-flow/site-permission';
 import './style.css';
 
 const enabledSites = requiredElement<HTMLUListElement>('enabled-sites');
@@ -10,10 +13,13 @@ void renderEnabledSites();
 void renderCommandBinding();
 
 async function renderEnabledSites(): Promise<void> {
-  const permissions = await browser.permissions.getAll();
+  const registrations =
+    await browser.scripting.getRegisteredContentScripts();
   const origins = Array.from(
     new Set(
-      (permissions.origins ?? [])
+      registrations
+        .filter(({ id }) => isEnabledSiteScriptId(id))
+        .flatMap(({ matches }) => matches ?? [])
         .map(originFromMatchPattern)
         .filter((origin): origin is string => origin !== null),
     ),

@@ -1,12 +1,12 @@
 import {
-  createOpenAiQuickHintProvider,
   parseQuickHint,
-} from '../src/modules/reading-flow/quick-hint-provider';
+  parseQuickHintSelection,
+} from '../src/modules/reading-flow/quick-hint';
 import {
   isSupportedOrigin,
   scriptIdFor,
 } from '../src/modules/reading-flow/site-permission';
-import type { Selection } from '../src/modules/assistance/generation-port';
+import type { Selection } from '../src/modules/reading-flow/selection';
 import type {
   EnableSiteResponse,
   QuickHintResponse,
@@ -44,7 +44,7 @@ export default defineBackground(() => {
         return enableSite(message.origin, sender);
       }
       if (message.type === 'quick-hint') {
-        return generateQuickHint(message.selection);
+        return generateQuickHint(message.selection, sender);
       }
       return undefined;
     },
@@ -71,7 +71,7 @@ async function siteStatus(
   origin: string,
   sender: Browser.runtime.MessageSender,
 ): Promise<EnableSiteResponse> {
-  if (!isSupportedOrigin(origin) || !senderMatchesOrigin(sender, origin)) {
+  if (!isAuthorizedSiteSender(sender, origin)) {
     return { enabled: false };
   }
   return {
@@ -84,7 +84,7 @@ async function enableSite(
   origin: string,
   sender: Browser.runtime.MessageSender,
 ): Promise<EnableSiteResponse> {
-  if (!isSupportedOrigin(origin) || !senderMatchesOrigin(sender, origin)) {
+  if (!isAuthorizedSiteSender(sender, origin)) {
     return { enabled: false, message: '只能啟用目前的 HTTP(S) 網站。' };
   }
 
@@ -115,47 +115,75 @@ async function enableSite(
 
 async function generateQuickHint(
   selection: Selection,
+  sender: Browser.runtime.MessageSender,
 ): Promise<QuickHintResponse> {
-  const testBrowser = import.meta.env.WXT_TEST_BROWSER === 'true';
-  const stored = await browser.storage.local.get(
-    testBrowser
-      ? ['openAiApiKey', 'quickHintTestFixture']
-      : 'openAiApiKey',
-  );
+  const origin = originForSender(sender);
   if (
-    testBrowser &&
-    stored.quickHintTestFixture !== undefined
+    origin === null ||
+    !(await browser.permissions.contains({ origins: [`${origin}/*`] }))
   ) {
+    return {
+      status: 'failed',
+      message: '請先啟用目前網站，再使用快速提示。',
+    };
+  }
+
+  let providerSelection: Selection;
+  try {
+    providerSelection = parseQuickHintSelection(selection);
+  } catch {
+    return {
+      status: 'failed',
+      message: '選取內容超過快速提示可接受的範圍。',
+    };
+  }
+
+  if (import.meta.env.WXT_TEST_BROWSER !== 'true') {
+    return {
+      status: 'failed',
+      message: 'OpenAI assistance 尚未設定完成。',
+    };
+  }
+
+  const stored = await browser.storage.local.get('quickHintTestFixture');
+  if (stored.quickHintTestFixture === undefined) {
+    return {
+      status: 'failed',
+      message: '受控的快速提示提供者尚未設定。',
+    };
+  }
+
+  try {
+    await browser.storage.local.set({
+      quickHintTestRequest: providerSelection,
+    });
     return {
       status: 'completed',
       result: parseQuickHint(stored.quickHintTestFixture),
     };
-  }
-  const apiKey = stored.openAiApiKey;
-  if (typeof apiKey !== 'string' || apiKey.length === 0) {
-    return { status: 'failed', message: '尚未設定 OpenAI API key。' };
-  }
-
-  try {
-    const provider = createOpenAiQuickHintProvider(apiKey);
-    return { status: 'completed', result: await provider.generate(selection) };
-  } catch (error) {
+  } catch {
     return {
       status: 'failed',
-      message: error instanceof Error ? error.message : '無法產生快速提示。',
+      message: '受控的快速提示提供者傳回無效結果。',
     };
   }
 }
 
-function senderMatchesOrigin(
+function isAuthorizedSiteSender(
   sender: Browser.runtime.MessageSender,
   origin: string,
 ): boolean {
-  if (sender.url === undefined) return false;
-  try {
-    return new URL(sender.url).origin === origin;
-  } catch {
-    return false;
-  }
+  return isSupportedOrigin(origin) && originForSender(sender) === origin;
 }
 
+function originForSender(
+  sender: Browser.runtime.MessageSender,
+): string | null {
+  if (sender.url === undefined) return null;
+  try {
+    const origin = new URL(sender.url).origin;
+    return isSupportedOrigin(origin) ? origin : null;
+  } catch {
+    return null;
+  }
+}

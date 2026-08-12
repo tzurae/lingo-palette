@@ -1,4 +1,10 @@
-import type { Selection } from '../assistance/generation-port';
+export type Selection = {
+  text: string;
+  context: {
+    before: string;
+    after: string;
+  };
+};
 
 export const SELECTION_LIMIT = 4_000;
 export const CONTEXT_LIMIT = 2_000;
@@ -45,6 +51,7 @@ export function captureSelection(
 export function codePointLength(value: string): number {
   return Array.from(value).length;
 }
+
 export function boundReadingContext(
   documentText: string,
   selectionStart: number,
@@ -57,28 +64,6 @@ export function boundReadingContext(
       selectionStart + selectionLength,
       CONTEXT_LIMIT,
     ),
-  };
-}
-
-
-export function fitAnchoredSurface(
-  anchor: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>,
-  surface: { width: number; height: number },
-  viewport: { width: number; height: number },
-  gap = 8,
-): { left: number; top: number } {
-  const maximumLeft = Math.max(gap, viewport.width - surface.width - gap);
-  const left = clamp(anchor.left, gap, maximumLeft);
-  const roomBelow = viewport.height - anchor.bottom;
-  const preferredTop =
-    roomBelow >= surface.height + gap
-      ? anchor.bottom + gap
-      : anchor.top - surface.height - gap;
-  const maximumTop = Math.max(gap, viewport.height - surface.height - gap);
-
-  return {
-    left,
-    top: clamp(preferredTop, gap, maximumTop),
   };
 }
 
@@ -99,8 +84,4 @@ function takeLastCodePoints(
 
 function takeCodePoints(value: string, start: number, maximum: number): string {
   return Array.from(value).slice(start, start + maximum).join('');
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(Math.max(value, minimum), maximum);
 }

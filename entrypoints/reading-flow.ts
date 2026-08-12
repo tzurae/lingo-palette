@@ -1,6 +1,6 @@
+import { fitAnchoredSurface } from '../src/modules/reading-flow/anchored-surface';
 import {
   captureSelection,
-  fitAnchoredSurface,
   SELECTION_LIMIT,
   type SelectionSnapshot,
 } from '../src/modules/reading-flow/selection';
@@ -27,6 +27,8 @@ function startReadingFlow(): void {
   let host: HTMLElement | null = null;
   let shadow: ShadowRoot | null = null;
   let enabled = false;
+  let quickHintRequestVersion = 0;
+  let quickHintBusy = false;
 
   void browser.runtime
     .sendMessage({ type: 'site-status', origin: location.origin })
@@ -48,10 +50,10 @@ function startReadingFlow(): void {
     }
     queueMicrotask(() => showForCurrentSelection(false));
   });
-  window.addEventListener(
-    focusEvent,
-    () => showForCurrentSelection(true),
-  );
+  window.addEventListener(focusEvent, () => {
+    if (document.activeElement instanceof HTMLIFrameElement) return;
+    showForCurrentSelection(true);
+  });
   window.addEventListener('scroll', placeSurface, true);
   window.addEventListener('resize', placeSurface);
   document.addEventListener('keydown', (event) => {
@@ -63,12 +65,14 @@ function startReadingFlow(): void {
   function showForCurrentSelection(focusControls: boolean): void {
     const nextSnapshot = captureSelection(document, document.getSelection());
     if (nextSnapshot === null) {
-      if (focusControls) announce('請先選取要理解的英文內容。');
+      if (focusControls) setStatus('請先選取要理解的英文內容。');
       return;
     }
 
+    invalidateQuickHintRequest();
     snapshot = nextSnapshot;
-    previousFocus = activeHTMLElement(document);
+    const currentFocus = activeHTMLElement(document);
+    if (currentFocus !== host) previousFocus = currentFocus;
     ensureSurface();
     renderControls();
     placeSurface();
@@ -157,19 +161,51 @@ function startReadingFlow(): void {
     renderControls();
     placeSurface();
     firstInteractiveElement()?.focus({ preventScroll: true });
-    announce('已啟用目前網站。');
+    setStatus('已啟用目前網站。');
+  }
+
+  function invalidateQuickHintRequest(): void {
+    quickHintRequestVersion += 1;
+    quickHintBusy = false;
   }
 
   async function requestQuickHint(): Promise<void> {
-    if (snapshot === null || snapshot.codePointLength > SELECTION_LIMIT) return;
+    if (
+      snapshot === null ||
+      snapshot.codePointLength > SELECTION_LIMIT ||
+      quickHintBusy
+    ) {
+      return;
+    }
+    const requestedSnapshot = snapshot;
+    const requestedQuickHintVersion = quickHintRequestVersion;
+    quickHintBusy = true;
     setBusy(true);
     setStatus('正在產生快速提示…');
-    const response = (await browser.runtime.sendMessage({
-      type: 'quick-hint',
-      selection: snapshot.selection,
-    })) as QuickHintResponse;
-    setBusy(false);
 
+    let response: QuickHintResponse;
+    try {
+      response = (await browser.runtime.sendMessage({
+        type: 'quick-hint',
+        selection: requestedSnapshot.selection,
+      })) as QuickHintResponse;
+    } catch {
+      if (quickHintRequestVersion === requestedQuickHintVersion) {
+        quickHintBusy = false;
+        setBusy(false);
+        setStatus('無法連線到 Lingo Palette。');
+      }
+      return;
+    }
+
+    if (
+      quickHintRequestVersion !== requestedQuickHintVersion ||
+      snapshot !== requestedSnapshot
+    ) {
+      return;
+    }
+    quickHintBusy = false;
+    setBusy(false);
     if (response.status === 'failed') {
       setStatus(response.message);
       return;
@@ -195,6 +231,7 @@ function startReadingFlow(): void {
   }
 
   function closeSurface(restoreFocus: boolean): void {
+    invalidateQuickHintRequest();
     host?.remove();
     host = null;
     shadow = null;
@@ -249,11 +286,17 @@ function startReadingFlow(): void {
     const section = shadow?.querySelector<HTMLElement>('section');
     section?.setAttribute('aria-busy', String(busy));
     const button = shadow?.querySelector<HTMLButtonElement>('.primary');
-    if (button !== null && button !== undefined) button.disabled = busy;
+    if (button !== null && button !== undefined) {
+      button.setAttribute('aria-disabled', String(busy));
+    }
   }
 
   function firstInteractiveElement(): HTMLButtonElement | null {
-    return shadow?.querySelector<HTMLButtonElement>('.primary:not(:disabled)') ?? null;
+    return (
+      shadow?.querySelector<HTMLButtonElement>('.primary:not(:disabled)') ??
+      shadow?.querySelector<HTMLButtonElement>('.close') ??
+      null
+    );
   }
 }
 
@@ -283,7 +326,7 @@ function createStyles(): HTMLStyleElement {
     .selection-summary, .status, .error { margin: 8px 0 0; }
     button { min-height: 36px; border: 1px solid #475569; border-radius: 7px; background: #fff; color: #172033; cursor: pointer; font: inherit; }
     button:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
-    button:disabled { cursor: not-allowed; opacity: .58; }
+    button:disabled, button[aria-disabled="true"] { cursor: not-allowed; opacity: .58; }
     .primary { width: 100%; margin-top: 10px; background: #1d4ed8; color: #fff; border-color: #1d4ed8; font-weight: 700; }
     .close { min-width: 48px; }
     .error { color: #991b1b; font-weight: 650; }
