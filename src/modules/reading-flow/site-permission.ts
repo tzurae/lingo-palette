@@ -1,3 +1,9 @@
+const enabledSiteScriptPrefix = 'enabled_site_';
+
+export function isEnabledSiteScriptId(id: string): boolean {
+  return id.startsWith(enabledSiteScriptPrefix);
+}
+
 export function isSupportedOrigin(origin: string): boolean {
   try {
     const protocol = new URL(origin).protocol;
@@ -12,7 +18,7 @@ export function scriptIdFor(origin: string): string {
     new TextEncoder().encode(origin),
     (byte) => byte.toString(16).padStart(2, '0'),
   ).join('');
-  return `enabled_site_${encodedOrigin}`;
+  return `${enabledSiteScriptPrefix}${encodedOrigin}`;
 }
 
 export function originFromMatchPattern(match: string): string | null {
