@@ -126,6 +126,28 @@ beforeAll(async () => {
           simplerExpression: 'delay until a later time',
           explanationCue: '延後原本安排的事情',
         },
+        deepDiveTestFixture: {
+          contextualMeaning:
+            'Here, postpone means deciding that the vote will happen later.',
+          usageFit:
+            'Neutral and suitable for an official committee decision.',
+          grammarPattern: {
+            pattern: 'postpone + noun',
+            explanation: 'The noun names the delayed event.',
+          },
+          alternatives: [
+            {
+              expression: 'put off',
+              distinction: 'More conversational than postpone.',
+            },
+          ],
+          examples: [
+            {
+              sentence: 'The committee postponed the vote.',
+              explanation: 'The vote is the delayed event.',
+            },
+          ],
+        },
         [apiKeyKey]: 'sk-browser-test',
         [configurationKey]: defaultConfiguration,
       });
@@ -235,6 +257,291 @@ describe('unpacked extension Reading Flow', () => {
     });
   });
 
+  it('opens durable Side Panel Current only for explicit Deep Dive requests', async () => {
+    const firstResult = {
+      contextualMeaning:
+        'Here, postpone means deciding that the vote will happen later.',
+      usageFit: 'Neutral and suitable for an official committee decision.',
+      grammarPattern: {
+        pattern: 'postpone + noun',
+        explanation: 'The noun names the delayed event.',
+      },
+      alternatives: [
+        {
+          expression: 'put off',
+          distinction: 'More conversational than postpone.',
+        },
+      ],
+      examples: [
+        {
+          sentence: 'The committee postponed the vote.',
+          explanation: 'The vote is the delayed event.',
+        },
+      ],
+    };
+    await worker.evaluate(async (result) => {
+      await chrome.storage.local.set({
+        openAiTestResponses: [
+          {
+            status: 200,
+            delayMs: 1_000,
+            body: {
+              output: [
+                {
+                  type: 'message',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: JSON.stringify(result),
+                    },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 80,
+                input_tokens_details: { cached_tokens: 10 },
+                output_tokens: 120,
+                output_tokens_details: { reasoning_tokens: 30 },
+                total_tokens: 200,
+              },
+            },
+          },
+        ],
+        openAiTestRequests: [],
+      });
+    }, firstResult);
+
+    await selectTextByPointer(page, '#copy', 'postpone');
+    await page.getByRole('button', { name: 'Deep Dive' }).click();
+    await expect
+      .poll(() => page.getByRole('status').textContent())
+      .toContain('Deep Dive 已在 Side Panel 開始');
+
+    let sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await expect
+      .poll(() =>
+        sidePanel.getByRole('heading', { name: 'Deep Dive in progress' }).isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() => sidePanel.getByText(firstResult.contextualMeaning).isVisible())
+      .toBe(true);
+    await expect
+      .poll(() => sidePanel.getByText('postpone + noun').isVisible())
+      .toBe(true);
+    await expect
+      .poll(() => sidePanel.getByText('put off', { exact: true }).isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.getByText('The committee postponed the vote.').isVisible(),
+      )
+      .toBe(true);
+
+    await sidePanel.close();
+    const unrelatedTab = await context.newPage();
+    await unrelatedTab.goto('about:blank');
+    sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await expect
+      .poll(() => sidePanel.getByText(firstResult.contextualMeaning).isVisible())
+      .toBe(true);
+    await unrelatedTab.close();
+
+    const currentTab = sidePanel.getByRole('tab', { name: 'Current' });
+    await currentTab.focus();
+    await currentTab.press('End');
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByRole('tab', { name: 'Saved' })
+          .getAttribute('aria-selected'),
+      )
+      .toBe('true');
+    await sidePanel.getByRole('tab', { name: 'Saved' }).press('ArrowLeft');
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByRole('tab', { name: 'Recent' })
+          .getAttribute('aria-selected'),
+      )
+      .toBe('true');
+    await sidePanel.getByRole('tab', { name: 'Current' }).click();
+
+    await selectTextByPointer(page, '#copy', 'committee');
+    await page.getByRole('button', { name: '快速提示' }).click();
+    await expect
+      .poll(() => page.getByText('delay until a later time').isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.getByText(/Selection: postpone/, { exact: false }).isVisible(),
+      )
+      .toBe(true);
+
+    const secondResult = {
+      ...firstResult,
+      contextualMeaning:
+        'Here, committee means the group making the decision.',
+      grammarPattern: {
+        pattern: 'committee + verb',
+        explanation: 'The collective noun is the sentence subject.',
+      },
+    };
+    await worker.evaluate(async (result) => {
+      await chrome.storage.local.set({
+        deepDiveTestFixture: result,
+        openAiTestResponses: [],
+      });
+    }, secondResult);
+    await selectTextByPointer(page, '#copy', 'committee');
+    await page.getByRole('button', { name: 'Deep Dive' }).click();
+    await expect
+      .poll(() => sidePanel.getByText(secondResult.contextualMeaning).isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.getByText(/Selection: committee/, { exact: false }).isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() => sidePanel.getByText(firstResult.contextualMeaning).count())
+      .toBe(0);
+
+    await worker.evaluate(async (result) => {
+      await chrome.storage.local.set({
+        openAiTestResponses: [
+          {
+            status: 200,
+            delayMs: 10_000,
+            body: {
+              output: [
+                {
+                  type: 'message',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: JSON.stringify(result),
+                    },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 80,
+                output_tokens: 120,
+                total_tokens: 200,
+              },
+            },
+          },
+        ],
+      });
+    }, firstResult);
+    await selectTextByPointer(page, '#copy', 'vote');
+    await page.getByRole('button', { name: 'Deep Dive' }).click();
+    await expect
+      .poll(() =>
+        sidePanel.getByRole('heading', { name: 'Deep Dive in progress' }).isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.getByText(/Selection: committee/, { exact: false }).isVisible(),
+      )
+      .toBe(true);
+    await sidePanel.getByRole('button', { name: '取消 Deep Dive' }).click();
+    await expect
+      .poll(() =>
+        sidePanel.getByRole('heading', { name: 'Deep Dive cancelled' }).isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText(/Requested Selection: vote/, { exact: false })
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .evaluate((panel) => document.activeElement === panel),
+      )
+      .toBe(true);
+
+    await worker.evaluate(async () => {
+      await chrome.storage.local.set({
+        openAiTestResponses: [
+          {
+            status: 401,
+            body: {
+              error: {
+                code: 'invalid_api_key',
+                message: 'Invalid key',
+              },
+            },
+          },
+        ],
+      });
+    });
+    await sidePanel.getByRole('button', { name: '重試 Deep Dive' }).click();
+    await expect
+      .poll(() =>
+        sidePanel.getByRole('heading', { name: 'Deep Dive failed' }).isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByRole('heading', { name: 'Deep Dive failed' })
+          .locator('..')
+          .getByText(/authentication 失敗/)
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.getByText(/Selection: committee/, { exact: false }).isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByRole('button', { name: '重試 Deep Dive' })
+          .isVisible(),
+      )
+      .toBe(true);
+
+
+    const requests = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get('openAiTestRequests');
+      return Array.isArray(stored.openAiTestRequests)
+        ? stored.openAiTestRequests
+        : [];
+    });
+    const deepDiveRequests = requests.filter(
+      (request: { text?: { format?: { name?: string } } }) =>
+        request.text?.format?.name === 'deep_dive',
+    );
+    expect(deepDiveRequests).toHaveLength(4);
+    expect(deepDiveRequests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reasoning: { effort: 'medium' },
+          store: false,
+          text: {
+            format: expect.objectContaining({
+              name: 'deep_dive',
+              strict: true,
+            }),
+          },
+        }),
+      ]),
+    );
+    await sidePanel.close();
+  }, 60_000);
+
   it('reports an over-limit Selection without truncating or enabling Quick Hint', async () => {
     await selectNodeContents(page, '#long-copy');
     const measuredLength = await page.evaluate(
@@ -255,6 +562,9 @@ describe('unpacked extension Reading Flow', () => {
       .toBe(true);
     await expect
       .poll(() => page.getByRole('button', { name: '快速提示' }).isDisabled())
+      .toBe(true);
+    await expect
+      .poll(() => page.getByRole('button', { name: 'Deep Dive' }).isDisabled())
       .toBe(true);
     expect(
       await page.evaluate(

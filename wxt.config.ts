@@ -6,7 +6,13 @@ export default defineConfig({
     name: 'Lingo Palette',
     description: 'Understand selected English without leaving the reading flow.',
     minimum_chrome_version: '116',
-    permissions: ['activeTab', 'commands', 'scripting', 'storage'],
+    permissions: [
+      'activeTab',
+      'commands',
+      'scripting',
+      'sidePanel',
+      'storage',
+    ],
     optional_host_permissions: ['http://*/*', 'https://*/*'],
     host_permissions: ['https://api.openai.com/*'],
     action: {

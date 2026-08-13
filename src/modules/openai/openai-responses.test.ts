@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { OpenAiConfiguration } from './configuration-store';
 import {
   createOpenAiResponsesClient,
+  deepDiveProviderTokenUpperBound,
   OpenAiCompatibilityError,
   OpenAiProviderError,
 } from './openai-responses';
@@ -317,6 +318,75 @@ describe('OpenAI Responses client', () => {
     expect(serialized).toContain('Keep the Traditional Chinese cue very short.');
     expect(serialized).toContain('postpone');
     expect(serialized).not.toMatch(/url|title|DOM|permission|Lookup history/i);
+  });
+
+  it('keeps the bounded Deep Dive payload beneath its extension-owned schema', async () => {
+    let request: z.infer<typeof requestBodySchema> | undefined;
+    const client = createOpenAiResponsesClient(async (_input, init) => {
+      request = parseRequestBody(init);
+      return completedResponse({
+        contextualMeaning:
+          'Here, “postpone” means deciding that the vote will happen later.',
+        usageFit:
+          'Neutral and suitable for an official committee decision.',
+        grammarPattern: {
+          pattern: 'postpone + noun / gerund',
+          explanation: 'The complement names the delayed event.',
+        },
+        alternatives: [
+          {
+            expression: 'put off',
+            distinction: 'More conversational than “postpone”.',
+          },
+        ],
+        examples: [
+          {
+            sentence: 'The committee postponed the vote.',
+            explanation: 'The noun phrase names the delayed event.',
+          },
+        ],
+      });
+    });
+    const input = {
+      apiKey: 'sk-runtime',
+      configuration: customConfiguration,
+      selection: {
+        text: 'postpone',
+        context: { before: 'They decided to ', after: ' the vote.' },
+      },
+    };
+
+    await expect(client.generateDeepDive(input)).resolves.toMatchObject({
+      result: {
+        contextualMeaning: expect.stringContaining('happen later'),
+        usageFit: expect.stringContaining('committee'),
+        grammarPattern: { pattern: 'postpone + noun / gerund' },
+        alternatives: [{ expression: 'put off' }],
+        examples: [{ sentence: 'The committee postponed the vote.' }],
+      },
+      usage: { totalTokens: 18 },
+    });
+
+    expect(request).toMatchObject({
+      model: 'gpt-custom-exact',
+      reasoning: { effort: 'medium' },
+      store: false,
+      max_output_tokens: 2_048,
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'deep_dive',
+          strict: true,
+        },
+      },
+    });
+    const serialized = JSON.stringify(request);
+    expect(serialized).toContain('Keep the Traditional Chinese cue very short.');
+    expect(serialized).toContain('postpone');
+    expect(serialized).not.toMatch(/url|title|DOM|permission|Lookup history/i);
+    expect(deepDiveProviderTokenUpperBound(input)).toBeGreaterThan(
+      new TextEncoder().encode(serialized).byteLength,
+    );
   });
 
   it.each([

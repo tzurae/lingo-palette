@@ -9,6 +9,7 @@ import {
   type OpenAiConfiguration,
 } from '../src/modules/openai/configuration-store';
 import { AssistanceFailure, createQuickHintExecutor } from '../src/modules/openai/quick-hint-executor';
+import { createDeepDiveExecutor } from '../src/modules/openai/deep-dive-executor';
 import {
   OPENAI_PRICING_CHECKED_DATE,
   OPENAI_USAGE_DASHBOARD_URL,
@@ -28,6 +29,8 @@ import {
   type CapabilityProbeReport,
   type OpenAiUsage,
 } from '../src/modules/openai/openai-responses';
+import { parseDeepDive } from '../src/modules/reading-flow/deep-dive';
+import { createDeepDiveStateStore } from '../src/modules/reading-flow/deep-dive-state';
 import {
   parseQuickHint,
   parseQuickHintSelection,
@@ -38,6 +41,7 @@ import {
 } from '../src/modules/reading-flow/site-permission';
 import type { Selection } from '../src/modules/reading-flow/selection';
 import type {
+  DeepDiveResponse,
   EnableSiteResponse,
   QuickHintResponse,
   ReadingFlowRequest,
@@ -51,12 +55,21 @@ const openAiConfigurationStore = createOpenAiConfigurationStore(
 const budgetLedger = createBudgetLedger(browser.storage.local);
 const quickHintCacheStorageKey = 'quickHintCacheV1';
 const maximumQuickHintCacheEntries = 100;
+const deepDiveCacheStorageKey = 'deepDiveCacheV1';
+const maximumDeepDiveCacheEntries = 100;
 let quickHintCacheWritePending = Promise.resolve();
+let deepDiveCacheWritePending = Promise.resolve();
 let activeOpenAiProbe: AbortController | null = null;
 let openAiActivationVersion = 0;
 let openAiConfigurationMutationPending = Promise.resolve();
 const activeQuickHints = new Map<string, AbortController>();
+let activeDeepDive: {
+  requestId: string;
+  controller: AbortController;
+} | null = null;
 const quickHintCacheSchema = z.record(z.string(), z.unknown());
+let deepDiveStartVersion = 0;
+const deepDiveCacheSchema = z.record(z.string(), z.unknown());
 const controlledResponseQueueSchema = z.array(
   z.object({
     status: z.number().int(),
@@ -128,40 +141,71 @@ const quickHintExecutor = createQuickHintExecutor({
           usage: providerUsage(input.configuration.model.id, generated.usage),
         };
       } catch (error) {
-        if (error instanceof OpenAiProviderError) {
-          throw new AssistanceFailure({
-            kind: error.providerKind,
-            message: error.message,
-            retryable: error.retryable,
-            ...(error.retryAfterMs === undefined
-              ? {}
-              : { retryAfterMs: error.retryAfterMs }),
-            ...(error.usage === undefined
-              ? {}
-              : {
-                  usage: providerUsage(
-                    input.configuration.model.id,
-                    error.usage,
-                  ),
-                }),
-          });
+        throw asAssistanceFailure(error, input.configuration.model.id);
+      }
+    },
+  },
+  wait: waitForRetry,
+  random: Math.random,
+});
+const deepDiveStateStore = createDeepDiveStateStore(browser.storage.local);
+const deepDiveExecutor = createDeepDiveExecutor({
+  isOnline: async () =>
+    import.meta.env.WXT_TEST_BROWSER === 'true'
+      ? (await browser.storage.local.get('openAiTestOnline'))
+          .openAiTestOnline !== false
+      : navigator.onLine,
+  cache: {
+    async get(key) {
+      const stored = await browser.storage.local.get(deepDiveCacheStorageKey);
+      const parsed = deepDiveCacheSchema.safeParse(
+        stored[deepDiveCacheStorageKey],
+      );
+      if (!parsed.success) return null;
+      try {
+        return parseDeepDive(parsed.data[key]);
+      } catch {
+        return null;
+      }
+    },
+    async put(key, value) {
+      await serializeDeepDiveCacheWrite(async () => {
+        const stored = await browser.storage.local.get(deepDiveCacheStorageKey);
+        const parsed = deepDiveCacheSchema.safeParse(
+          stored[deepDiveCacheStorageKey],
+        );
+        const cache = parsed.success ? { ...parsed.data } : {};
+        delete cache[key];
+        cache[key] = value;
+        const keys = Object.keys(cache);
+        for (
+          let index = 0;
+          index < keys.length - maximumDeepDiveCacheEntries;
+          index += 1
+        ) {
+          const oldest = keys[index];
+          if (oldest !== undefined) delete cache[oldest];
         }
-        if (error instanceof OpenAiCompatibilityError) {
-          throw new AssistanceFailure({
-            kind: 'incompatible',
-            message: error.message,
-            retryable: false,
-            ...(error.usage === undefined
-              ? {}
-              : {
-                  usage: providerUsage(
-                    input.configuration.model.id,
-                    error.usage,
-                  ),
-                }),
-          });
-        }
-        throw error;
+        await browser.storage.local.set({
+          [deepDiveCacheStorageKey]: cache,
+        });
+      });
+    },
+  },
+  budget: budgetLedger,
+  provider: {
+    async generate(input, signal) {
+      try {
+        const generated = await openAiResponsesClient.generateDeepDive(
+          input,
+          signal,
+        );
+        return {
+          result: generated.result,
+          usage: providerUsage(input.configuration.model.id, generated.usage),
+        };
+      } catch (error) {
+        throw asAssistanceFailure(error, input.configuration.model.id);
       }
     },
   },
@@ -175,6 +219,20 @@ async function serializeQuickHintCacheWrite(
   const previous = quickHintCacheWritePending;
   const completion = Promise.withResolvers<void>();
   quickHintCacheWritePending = completion.promise;
+  await previous;
+  try {
+    await operation();
+  } finally {
+    completion.resolve();
+  }
+}
+
+async function serializeDeepDiveCacheWrite(
+  operation: () => Promise<void>,
+): Promise<void> {
+  const previous = deepDiveCacheWritePending;
+  const completion = Promise.withResolvers<void>();
+  deepDiveCacheWritePending = completion.promise;
   await previous;
   try {
     await operation();
@@ -197,14 +255,21 @@ async function serializeOpenAiConfigurationMutation<T>(
   }
 }
 
+let backgroundInitialization = Promise.resolve();
+
 export default defineBackground(() => {
-  void initializeBackground();
+  backgroundInitialization = initializeBackgroundState();
+  registerBackgroundListeners();
 });
 
-async function initializeBackground(): Promise<void> {
+async function initializeBackgroundState(): Promise<void> {
   await browser.storage.local.setAccessLevel({
     accessLevel: 'TRUSTED_CONTEXTS',
   });
+  await deepDiveStateStore.interruptRunning();
+}
+
+function registerBackgroundListeners(): void {
   browser.action.onClicked.addListener((tab) => {
     void injectReadingFlow(tab.id, false);
   });
@@ -226,7 +291,10 @@ async function initializeBackground(): Promise<void> {
       sender,
     ):
       | Promise<
-          EnableSiteResponse | QuickHintResponse | OpenAiSettingsResponse
+          | DeepDiveResponse
+          | EnableSiteResponse
+          | QuickHintResponse
+          | OpenAiSettingsResponse
         >
       | undefined => {
       if (message.type === 'site-status') {
@@ -240,6 +308,18 @@ async function initializeBackground(): Promise<void> {
       }
       if (message.type === 'cancel-quick-hint') {
         return cancelQuickHint(sender);
+      }
+      if (message.type === 'start-deep-dive') {
+        return startDeepDive(message.selection, sender);
+      }
+      if (message.type === 'get-deep-dive-state') {
+        return getDeepDiveState(sender);
+      }
+      if (message.type === 'retry-deep-dive') {
+        return retryDeepDive(sender);
+      }
+      if (message.type === 'cancel-deep-dive') {
+        return cancelDeepDive(sender);
       }
       return handleOpenAiSettings(message, sender);
     },
@@ -409,6 +489,178 @@ async function cancelQuickHint(
 ): Promise<QuickHintResponse> {
   activeQuickHints.get(quickHintRequestKey(sender))?.abort();
   return { status: 'cancelled', message: '已取消 Quick Hint；Selection 仍保留。' };
+}
+
+async function startDeepDive(
+  selection: Selection,
+  sender: Browser.runtime.MessageSender,
+): Promise<DeepDiveResponse> {
+  const origin = originForSender(sender);
+  const tabId = sender.tab?.id;
+  if (origin === null || tabId === undefined) {
+    return { status: 'failed', message: '只能分析目前網站的 Selection。' };
+  }
+
+  let providerSelection: Selection;
+  try {
+    providerSelection = parseQuickHintSelection(selection);
+  } catch {
+    return {
+      status: 'failed',
+      message: '選取內容超過 Deep Dive 可接受的範圍。',
+    };
+  }
+
+  const panelOpening = browser.sidePanel.open({ tabId });
+  try {
+    await backgroundInitialization;
+  } catch {
+    void panelOpening.catch(() => undefined);
+    return {
+      status: 'failed',
+      message: 'Lingo Palette background 無法初始化；請重新載入 extension。',
+    };
+  }
+  if (
+    !(await browser.permissions.contains({ origins: [`${origin}/*`] }))
+  ) {
+    void panelOpening.catch(() => undefined);
+    return {
+      status: 'failed',
+      message: '請先啟用目前網站，再使用 Deep Dive。',
+    };
+  }
+  try {
+    await panelOpening;
+  } catch {
+    return {
+      status: 'failed',
+      message: 'Chrome 無法開啟 Lingo Palette Side Panel；請再試一次。',
+    };
+  }
+
+  return beginDeepDive(providerSelection);
+}
+
+async function beginDeepDive(
+  selection: Selection,
+): Promise<DeepDiveResponse> {
+  const startVersion = deepDiveStartVersion + 1;
+  deepDiveStartVersion = startVersion;
+  activeDeepDive?.controller.abort();
+  const request = await deepDiveStateStore.begin(selection);
+  if (startVersion !== deepDiveStartVersion) {
+    const message =
+      '此 Deep Dive 已由較新的明確要求取代；Selection 仍保留。';
+    await deepDiveStateStore.cancel(request.id, message);
+    return { status: 'cancelled', message };
+  }
+  const controller = new AbortController();
+  activeDeepDive = { requestId: request.id, controller };
+  void executeDeepDive(request.id, selection, controller);
+  return { status: 'started', requestId: request.id };
+}
+
+async function executeDeepDive(
+  requestId: string,
+  selection: Selection,
+  controller: AbortController,
+): Promise<void> {
+  try {
+    const settings = await openAiConfigurationStore.loadSettings();
+    const runtime = await openAiConfigurationStore.loadRuntimeConfiguration();
+    if (import.meta.env.WXT_TEST_BROWSER === 'true') {
+      await browser.storage.local.set({ deepDiveTestRequest: selection });
+    }
+    const outcome = await deepDiveExecutor.execute(
+      {
+        apiKey: runtime?.apiKey ?? '',
+        configuration: settings.configuration,
+        selection,
+      },
+      controller.signal,
+    );
+    if (controller.signal.aborted) {
+      await deepDiveStateStore.cancel(
+        requestId,
+        '已取消 Deep Dive；Selection 仍保留，可明確重試。',
+      );
+      return;
+    }
+    await deepDiveStateStore.settle(requestId, {
+      status: 'completed',
+      result: outcome.result,
+    });
+  } catch (error) {
+    const failure =
+      error instanceof AssistanceFailure
+        ? error
+        : new AssistanceFailure({
+            kind: 'provider-unavailable',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'OpenAI assistance 無法產生 Deep Dive。',
+            retryable: false,
+          });
+    await deepDiveStateStore.settle(requestId, {
+      status: failure.kind === 'cancelled' ? 'cancelled' : 'failed',
+      message: failure.message,
+    });
+  } finally {
+    if (activeDeepDive?.controller === controller) activeDeepDive = null;
+  }
+}
+
+async function getDeepDiveState(
+  sender: Browser.runtime.MessageSender,
+): Promise<DeepDiveResponse> {
+  if (!isTrustedExtensionSender(sender)) {
+    return { status: 'failed', message: '只有 Lingo Palette Side Panel 可以讀取 Current。' };
+  }
+  await backgroundInitialization;
+  return { status: 'loaded', state: await deepDiveStateStore.load() };
+}
+
+async function retryDeepDive(
+  sender: Browser.runtime.MessageSender,
+): Promise<DeepDiveResponse> {
+  if (!isTrustedExtensionSender(sender)) {
+    return { status: 'failed', message: '只有 Lingo Palette Side Panel 可以重試 Deep Dive。' };
+  }
+  await backgroundInitialization;
+  const state = await deepDiveStateStore.load();
+  if (state.request === null || state.request.status === 'working') {
+    return { status: 'failed', message: '目前沒有可重試的 Deep Dive。' };
+  }
+  return beginDeepDive(state.request.selection);
+}
+
+async function cancelDeepDive(
+  sender: Browser.runtime.MessageSender,
+): Promise<DeepDiveResponse> {
+  if (!isTrustedExtensionSender(sender)) {
+    return { status: 'failed', message: '只有 Lingo Palette Side Panel 可以取消 Deep Dive。' };
+  }
+  await backgroundInitialization;
+  deepDiveStartVersion += 1;
+  const active = activeDeepDive;
+  active?.controller.abort();
+  const message = '已取消 Deep Dive；Selection 仍保留，可明確重試。';
+  if (active !== null) {
+    return {
+      status: 'loaded',
+      state: await deepDiveStateStore.cancel(active.requestId, message),
+    };
+  }
+  const state = await deepDiveStateStore.load();
+  if (state.request?.status !== 'working') {
+    return { status: 'loaded', state };
+  }
+  return {
+    status: 'loaded',
+    state: await deepDiveStateStore.cancel(state.request.id, message),
+  };
 }
 
 async function handleOpenAiSettings(
@@ -650,6 +902,41 @@ function providerUsage(model: string, usage: OpenAiUsage): ProviderUsage {
   };
 }
 
+function asAssistanceFailure(
+  error: unknown,
+  model: string,
+): AssistanceFailure {
+  if (error instanceof AssistanceFailure) return error;
+  if (error instanceof OpenAiProviderError) {
+    return new AssistanceFailure({
+      kind: error.providerKind,
+      message: error.message,
+      retryable: error.retryable,
+      ...(error.retryAfterMs === undefined
+        ? {}
+        : { retryAfterMs: error.retryAfterMs }),
+      ...(error.usage === undefined
+        ? {}
+        : { usage: providerUsage(model, error.usage) }),
+    });
+  }
+  if (error instanceof OpenAiCompatibilityError) {
+    return new AssistanceFailure({
+      kind: 'incompatible',
+      message: error.message,
+      retryable: false,
+      ...(error.usage === undefined
+        ? {}
+        : { usage: providerUsage(model, error.usage) }),
+    });
+  }
+  return new AssistanceFailure({
+    kind: 'provider-unavailable',
+    message: error instanceof Error ? error.message : 'OpenAI request failed.',
+    retryable: false,
+  });
+}
+
 function quickHintRequestKey(sender: Browser.runtime.MessageSender): string {
   return `${sender.tab?.id ?? 'unknown'}:${sender.frameId ?? 0}`;
 }
@@ -687,6 +974,7 @@ async function controlledOpenAiFetch(
   const stored = await browser.storage.local.get([
     'openAiTestResponses',
     'quickHintTestFixture',
+    'deepDiveTestFixture',
     'openAiTestRequests',
   ]);
   const priorRequests = Array.isArray(stored.openAiTestRequests)
@@ -717,7 +1005,9 @@ async function controlledOpenAiFetch(
   const output =
     request.text.format.name === 'quick_hint'
       ? stored.quickHintTestFixture
-      : { compatible: true };
+      : request.text.format.name === 'deep_dive'
+        ? stored.deepDiveTestFixture
+        : { compatible: true };
   return Response.json({
     output: [
       {

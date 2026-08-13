@@ -5,6 +5,7 @@ import {
   type SelectionSnapshot,
 } from '../src/modules/reading-flow/selection';
 import type {
+  DeepDiveResponse,
   EnableSiteResponse,
   QuickHintResponse,
 } from '../src/modules/reading-flow/messages';
@@ -143,7 +144,11 @@ function startReadingFlow(): void {
       return;
     }
 
-    const quickHint = createElement('button', 'primary', '快速提示');
+    const quickHint = createElement(
+      'button',
+      'primary quick-hint',
+      '快速提示',
+    );
     quickHint.disabled = selectionLength > SELECTION_LIMIT;
     quickHint.addEventListener('click', () => {
       if (quickHintBusy) {
@@ -152,7 +157,14 @@ function startReadingFlow(): void {
       }
       void requestQuickHint();
     });
-    section.append(quickHint);
+    const deepDive = createElement(
+      'button',
+      'secondary deep-dive',
+      'Deep Dive',
+    );
+    deepDive.disabled = selectionLength > SELECTION_LIMIT;
+    deepDive.addEventListener('click', () => void requestDeepDive());
+    section.append(quickHint, deepDive);
 
     if (selectionLength > SELECTION_LIMIT) {
       section.append(
@@ -272,6 +284,31 @@ function startReadingFlow(): void {
     }
   }
 
+  async function requestDeepDive(): Promise<void> {
+    if (
+      snapshot === null ||
+      snapshot.codePointLength > SELECTION_LIMIT
+    ) {
+      return;
+    }
+    setStatus('正在開啟 Deep Dive…');
+    try {
+      const response = (await browser.runtime.sendMessage({
+        type: 'start-deep-dive',
+        selection: snapshot.selection,
+      })) as DeepDiveResponse;
+      setStatus(
+        response.status === 'started'
+          ? 'Deep Dive 已在 Side Panel 開始；目前 Selection 會保留到完成、失敗或取消。'
+          : response.status === 'loaded'
+            ? 'Deep Dive Side Panel 已更新。'
+            : response.message,
+      );
+    } catch {
+      setStatus('無法開啟 Deep Dive Side Panel；Selection 仍保留。');
+    }
+  }
+
   function closeSurface(restoreFocus: boolean): void {
     invalidateQuickHintRequest();
     host?.remove();
@@ -341,7 +378,8 @@ function startReadingFlow(): void {
   function setBusy(busy: boolean): void {
     const section = shadow?.querySelector<HTMLElement>('section');
     section?.setAttribute('aria-busy', String(busy));
-    const button = shadow?.querySelector<HTMLButtonElement>('.primary');
+    const button =
+      shadow?.querySelector<HTMLButtonElement>('.quick-hint');
     if (button !== null && button !== undefined) {
       button.textContent = busy ? '取消快速提示' : '快速提示';
     }
@@ -384,6 +422,7 @@ function createStyles(): HTMLStyleElement {
     button:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
     button:disabled, button[aria-disabled="true"] { cursor: not-allowed; opacity: .58; }
     .primary { width: 100%; margin-top: 10px; background: #1d4ed8; color: #fff; border-color: #1d4ed8; font-weight: 700; }
+    .secondary { width: 100%; margin-top: 8px; background: #fff; color: #172033; font-weight: 700; }
     .close { min-width: 48px; }
     .error { color: #991b1b; font-weight: 650; }
     .result { display: grid; gap: 4px; margin-top: 10px; padding: 10px; border-radius: 7px; background: #eff6ff; }
