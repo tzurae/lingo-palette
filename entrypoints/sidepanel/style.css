@@ -135,6 +135,32 @@ li p {
   margin: 4px 0 0;
 }
 
+.lookup-records {
+  display: grid;
+  gap: 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.lookup-record {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.lookup-record time {
+  color: #475569;
+  font-size: 13px;
+}
+
+.lookup-record .deep-dive-result {
+  padding-top: 4px;
+  border-top: 1px solid #cbd5e1;
+}
+
 .request {
   margin-top: 16px;
   border-left: 5px solid #2563eb;
@@ -183,7 +209,8 @@ li p {
   [role="tab"],
   .actions button,
   .deep-dive-result > section,
-  .request {
+  .request,
+  .lookup-record {
     border: 2px solid ButtonText;
   }
 

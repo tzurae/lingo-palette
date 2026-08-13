@@ -97,7 +97,10 @@ describe('Side Panel Current state store', () => {
     });
     const completed = await store.begin(selection);
     await store.settle(completed.id, { status: 'completed', result });
-    const pending = await store.begin(replacementSelection);
+    const pending = await store.begin(
+      replacementSelection,
+      'https://example.test/article',
+    );
     await store.settle(pending.id, outcome);
 
     await expect(store.load()).resolves.toMatchObject({
@@ -107,6 +110,7 @@ describe('Side Panel Current state store', () => {
         selection: replacementSelection,
         status: outcome.status,
         message: outcome.message,
+        sourceUrl: 'https://example.test/article',
       },
     });
   });

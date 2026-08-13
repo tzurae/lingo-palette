@@ -1,6 +1,11 @@
+import {
+  LOOKUP_RECORDS_STORAGE_KEY,
+  type LookupRecord,
+} from '../../src/modules/learning/lookup-record';
 import { DEEP_DIVE_STATE_STORAGE_KEY } from '../../src/modules/reading-flow/deep-dive-state';
 import type {
   DeepDiveResponse,
+  RecentResponse,
 } from '../../src/modules/reading-flow/messages';
 import type {
   DeepDiveCurrent,
@@ -14,6 +19,8 @@ const tabs = Array.from(
 );
 const currentPanel = requiredElement<HTMLElement>('#current-panel');
 const currentContent = requiredElement<HTMLElement>('#current-content');
+const recentPanel = requiredElement<HTMLElement>('#recent-panel');
+const recentContent = requiredElement<HTMLElement>('#recent-content');
 const liveStatus = requiredElement<HTMLElement>('#live-status');
 
 for (const tab of tabs) {
@@ -33,14 +40,16 @@ tabList.addEventListener('keydown', (event) => {
 });
 
 browser.storage.onChanged.addListener((changes, areaName) => {
-  if (
-    areaName === 'local' &&
-    changes[DEEP_DIVE_STATE_STORAGE_KEY] !== undefined
-  ) {
+  if (areaName !== 'local') return;
+  if (changes[DEEP_DIVE_STATE_STORAGE_KEY] !== undefined) {
     void loadState();
+  }
+  if (changes[LOOKUP_RECORDS_STORAGE_KEY] !== undefined) {
+    void loadRecent();
   }
 });
 void loadState();
+void loadRecent();
 
 async function loadState(): Promise<void> {
   try {
@@ -59,6 +68,92 @@ async function loadState(): Promise<void> {
   } catch {
     renderError('無法讀取 Deep Dive Current。');
   }
+}
+
+async function loadRecent(): Promise<void> {
+  try {
+    const response = (await browser.runtime.sendMessage({
+      type: 'get-recent',
+    })) as RecentResponse;
+    if (response.status !== 'loaded') {
+      renderRecentError(response.message);
+      return;
+    }
+    renderRecent(response.records);
+  } catch {
+    renderRecentError('無法讀取 Recent Lookup Records。');
+  }
+}
+
+function renderRecent(records: LookupRecord[]): void {
+  const restoreFocus = recentContent.contains(document.activeElement);
+  recentContent.replaceChildren(element('h2', 'Recent'));
+  if (records.length === 0) {
+    recentContent.append(element('p', '目前沒有最近的 Lookup Records。'));
+  } else {
+    const list = element('ol');
+    list.className = 'lookup-records';
+    for (const record of records) {
+      const item = element('li');
+      item.append(renderLookupRecord(record));
+      list.append(item);
+    }
+    recentContent.append(list);
+  }
+  if (!recentPanel.hidden) {
+    announce(`Recent 已載入 ${records.length} 筆 Lookup Records。`);
+  }
+  if (restoreFocus) recentPanel.focus({ preventScroll: true });
+}
+
+function renderLookupRecord(record: LookupRecord): HTMLElement {
+  const article = element('article');
+  article.className = 'lookup-record';
+  const actionLabel =
+    record.action.type === 'quick-hint' ? 'Quick Hint' : 'Deep Dive';
+  const completed = element('time', new Date(record.completedAt).toLocaleString());
+  completed.dateTime = record.completedAt;
+  article.append(
+    element('h3', actionLabel),
+    completed,
+    labelledText(
+      'Usage',
+      `${record.usage.source}; ${record.usage.attempts} provider attempts; ${record.usage.provider?.totalTokens ?? 0} tokens`,
+    ),
+  );
+  if (record.sourceUrl !== undefined) {
+    article.append(labelledText('Source', record.sourceUrl));
+  }
+  if (record.action.type === 'quick-hint') {
+    article.append(
+      labelledText('Selection', record.selection.text, 'selection'),
+      resultSection('Simpler expression', record.action.result.simplerExpression),
+    );
+    if (record.action.result.explanationCue !== null) {
+      article.append(
+        resultSection('Explanation cue', record.action.result.explanationCue),
+      );
+    }
+  } else {
+    article.append(
+      renderCompleted({
+        selection: record.selection,
+        result: record.action.result,
+        completedAt: record.completedAt,
+      }),
+    );
+  }
+  return article;
+}
+
+function renderRecentError(message: string): void {
+  const restoreFocus = recentContent.contains(document.activeElement);
+  recentContent.replaceChildren(
+    element('h2', 'Recent'),
+    element('p', message, 'error'),
+  );
+  if (!recentPanel.hidden) announce(message);
+  if (restoreFocus) recentPanel.focus({ preventScroll: true });
 }
 
 function renderCurrent(state: DeepDiveState): void {
