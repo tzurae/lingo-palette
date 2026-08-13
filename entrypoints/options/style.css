@@ -23,6 +23,67 @@ section {
   background: white;
 }
 
+form,
+.field,
+fieldset {
+  display: grid;
+  gap: 8px;
+}
+
+form {
+  gap: 20px;
+}
+
+fieldset {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+}
+
+label,
+legend {
+  font-weight: 650;
+}
+
+input,
+select,
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px;
+  border: 1px solid #64748b;
+  border-radius: 6px;
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.inline-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
+
+.inline-control input {
+  width: auto;
+  min-height: auto;
+}
+
+.warning,
+.error {
+  color: #991b1b;
+  font-weight: 650;
+}
+
+[hidden] {
+  display: none !important;
+}
+
 ul {
   display: grid;
   gap: 8px;
@@ -39,13 +100,19 @@ li {
 }
 
 button,
-a {
+a,
+input,
+select,
+textarea {
   min-height: 36px;
   font: inherit;
 }
 
 button:focus-visible,
-a:focus-visible {
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
   outline: 3px solid #f59e0b;
   outline-offset: 3px;
 }

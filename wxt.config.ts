@@ -8,6 +8,7 @@ export default defineConfig({
     minimum_chrome_version: '116',
     permissions: ['activeTab', 'commands', 'scripting', 'storage'],
     optional_host_permissions: ['http://*/*', 'https://*/*'],
+    host_permissions: ['https://api.openai.com/*'],
     action: {
       default_title: 'Open Lingo Palette',
     },
