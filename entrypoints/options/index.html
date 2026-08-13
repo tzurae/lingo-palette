@@ -86,11 +86,51 @@
             <p id="personal-instructions-count"></p>
           </div>
 
+          <fieldset>
+            <legend>Daily provider hard limits</legend>
+            <p>
+              每日依裝置本機午夜重設；將任一上限設為 0 會明確停用 provider Actions。
+            </p>
+            <div class="field">
+              <label for="daily-token-limit">Provider token 上限</label>
+              <input
+                id="daily-token-limit"
+                type="number"
+                min="0"
+                max="2000000"
+                step="1"
+                required
+              />
+              <p>允許 0 或 10,000–2,000,000。</p>
+            </div>
+            <div class="field">
+              <label for="daily-cost-limit">Estimated-cost 上限（US$）</label>
+              <input
+                id="daily-cost-limit"
+                type="number"
+                min="0"
+                max="20"
+                step="0.01"
+                required
+              />
+              <p>允許 0 或 US$0.10–20.00；未知 Custom model 價格只執行 token 上限。</p>
+            </div>
+            <button id="save-daily-budget" type="button">儲存每日 hard limits</button>
+          </fieldset>
+
           <button id="activate-openai" type="submit">儲存並啟用</button>
         </form>
         <p id="active-openai-configuration"></p>
         <ul id="openai-probe-usage" aria-label="Capability probe usage"></ul>
         <p id="openai-status" role="status" aria-live="polite"></p>
+        <p id="budget-usage"></p>
+        <p id="pricing-status"></p>
+        <p>
+          <a id="openai-usage-dashboard" href="https://platform.openai.com/usage">
+            開啟 OpenAI Usage Dashboard
+          </a>
+        </p>
+        <p id="budget-status" role="status" aria-live="polite"></p>
       </section>
       <section aria-labelledby="sites-title">
         <h2 id="sites-title">已啟用的網站</h2>

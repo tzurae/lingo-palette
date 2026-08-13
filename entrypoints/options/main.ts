@@ -1,3 +1,4 @@
+import { validateDailyBudget } from '../../src/modules/openai/budget-ledger';
 import {
   CURATED_REASONING_EFFORTS,
   CUSTOM_REASONING_EFFORTS,
@@ -56,6 +57,17 @@ const activeOpenAiConfiguration = requiredElement<HTMLParagraphElement>(
 const openAiProbeUsage =
   requiredElement<HTMLUListElement>('openai-probe-usage');
 const openAiStatus = requiredElement<HTMLParagraphElement>('openai-status');
+const dailyTokenLimit =
+  requiredElement<HTMLInputElement>('daily-token-limit');
+const dailyCostLimit =
+  requiredElement<HTMLInputElement>('daily-cost-limit');
+const saveDailyBudget =
+  requiredElement<HTMLButtonElement>('save-daily-budget');
+const budgetUsage = requiredElement<HTMLParagraphElement>('budget-usage');
+const pricingStatus = requiredElement<HTMLParagraphElement>('pricing-status');
+const openAiUsageDashboard =
+  requiredElement<HTMLAnchorElement>('openai-usage-dashboard');
+const budgetStatus = requiredElement<HTMLParagraphElement>('budget-status');
 const enabledSites = requiredElement<HTMLUListElement>('enabled-sites');
 const sitesStatus = requiredElement<HTMLParagraphElement>('sites-status');
 const commandBinding = requiredElement<HTMLParagraphElement>('command-binding');
@@ -70,6 +82,9 @@ showOpenAiApiKey.addEventListener('change', () => {
 });
 removeOpenAiApiKey.addEventListener('click', () => {
   void removeStoredOpenAiApiKey();
+});
+saveDailyBudget.addEventListener('click', () => {
+  void updateDailyBudget();
 });
 openAiModel.addEventListener('change', () => {
   renderModelControls({
@@ -182,6 +197,47 @@ async function removeStoredOpenAiApiKey(): Promise<void> {
     setOpenAiBusy(false);
   }
 }
+async function updateDailyBudget(): Promise<void> {
+  budgetStatus.textContent = '';
+  let budget;
+  if (dailyTokenLimit.value.trim() === '' || dailyCostLimit.value.trim() === '') {
+    budgetStatus.textContent = '每日 hard limits 不可空白；輸入 0 才會停用 provider Actions。';
+    return;
+  }
+  try {
+    budget = validateDailyBudget({
+      tokenLimit: Number(dailyTokenLimit.value),
+      estimatedCostUsdLimit: Number(dailyCostLimit.value),
+    });
+  } catch (error) {
+    budgetStatus.textContent =
+      error instanceof Error ? error.message : '每日 hard limits 無效。';
+    return;
+  }
+
+  setOpenAiBusy(true);
+  try {
+    const response = await sendOpenAiSettingsMessage({
+      type: 'update-openai-budget',
+      budget,
+    });
+    if (response.status === 'failed') {
+      budgetStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'budget-updated') {
+      budgetStatus.textContent = '每日 hard limits 回應不完整。';
+      return;
+    }
+    applyOpenAiSettings(response.settings);
+    budgetStatus.textContent = '每日 provider hard limits 已儲存。';
+  } catch {
+    budgetStatus.textContent = '無法更新每日 provider hard limits。';
+  } finally {
+    setOpenAiBusy(false);
+  }
+}
+
 
 function configurationFromForm(): OpenAiConfiguration {
   const model =
@@ -220,6 +276,25 @@ function applyOpenAiSettings(settings: OpenAiSettingsSnapshot): void {
   removeOpenAiApiKey.disabled = !settings.hasApiKey;
   activeOpenAiConfiguration.textContent =
     `目前設定：${configuration.model.id}；Quick Hint ${configuration.efforts.quickHint}、Deep Dive ${configuration.efforts.deepDive}、Review ${configuration.efforts.review}。`;
+  renderBudgetSettings(settings);
+}
+
+function renderBudgetSettings(settings: OpenAiSettingsSnapshot): void {
+  const { budget, pricing } = settings;
+  dailyTokenLimit.value = String(budget.settings.tokenLimit);
+  dailyCostLimit.value = String(budget.settings.estimatedCostUsdLimit);
+  const usedCost =
+    budget.used.estimatedCostUsd === null
+      ? '無本機估算'
+      : `US$${budget.used.estimatedCostUsd.toFixed(6)}`;
+  budgetUsage.textContent =
+    `本機日期 ${budget.activeDate}：已用 ${budget.used.totalTokens.toLocaleString('en-US')} tokens（input ${budget.used.inputTokens.toLocaleString('en-US')}，cached input ${budget.used.cachedInputTokens.toLocaleString('en-US')}，output ${budget.used.outputTokens.toLocaleString('en-US')}，reasoning ${budget.used.reasoningTokens.toLocaleString('en-US')}）與 ${usedCost}；目前預留 ${budget.reserved.tokens.toLocaleString('en-US')} tokens / US$${budget.reserved.estimatedCostUsd.toFixed(6)}。下次本機重設：${new Date(budget.nextLocalReset).toLocaleString('zh-Hant')}。`;
+  const unavailable = !pricing.estimatedCostBudgetAvailable;
+  pricingStatus.textContent = unavailable
+    ? `價格 catalog 檢查日：${pricing.checkedDate}。目前模型價格未知；保留 token hard limit，不套用 estimated-cost limit 或估算。`
+    : `價格 catalog 檢查日：${pricing.checkedDate}。${pricing.stale ? '警告：catalog 已超過 90 天，請先確認價格再依賴成本估算。' : 'catalog 尚未過期。'}`;
+  pricingStatus.classList.toggle('warning', pricing.stale || unavailable);
+  openAiUsageDashboard.href = pricing.usageDashboardUrl;
 }
 
 function renderModelControls(
@@ -296,7 +371,7 @@ function renderProbeUsage(
   openAiProbeUsage.replaceChildren(
     ...probes.map((probe) =>
       createListItem(
-        `${probe.effort}：input ${probe.usage.inputTokens.toLocaleString('en-US')}、output ${probe.usage.outputTokens.toLocaleString('en-US')}、total ${probe.usage.totalTokens.toLocaleString('en-US')}`,
+        `${probe.effort}：input ${probe.usage.inputTokens.toLocaleString('en-US')}（cached ${probe.usage.cachedInputTokens.toLocaleString('en-US')}）、output ${probe.usage.outputTokens.toLocaleString('en-US')}（reasoning ${probe.usage.reasoningTokens.toLocaleString('en-US')}）、total ${probe.usage.totalTokens.toLocaleString('en-US')}`,
       ),
     ),
   );
