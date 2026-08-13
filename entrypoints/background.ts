@@ -1,18 +1,37 @@
+import {
+  createBudgetLedger,
+  type ProviderUsage,
+} from '../src/modules/openai/budget-ledger';
 import { z } from 'zod';
 import {
   createOpenAiConfigurationStore,
   validateOpenAiConfiguration,
+  type OpenAiConfiguration,
 } from '../src/modules/openai/configuration-store';
+import { AssistanceFailure, createQuickHintExecutor } from '../src/modules/openai/quick-hint-executor';
+import {
+  OPENAI_PRICING_CHECKED_DATE,
+  OPENAI_USAGE_DASHBOARD_URL,
+  estimateOpenAiCost,
+  pricingForModel,
+  pricingIsStale,
+} from '../src/modules/openai/pricing';
 import type {
   OpenAiSettingsRequest,
   OpenAiSettingsResponse,
+  OpenAiSettingsSnapshot,
 } from '../src/modules/openai/messages';
 import {
   createOpenAiResponsesClient,
   OpenAiCompatibilityError,
   OpenAiProviderError,
+  type CapabilityProbeReport,
+  type OpenAiUsage,
 } from '../src/modules/openai/openai-responses';
-import { parseQuickHintSelection } from '../src/modules/reading-flow/quick-hint';
+import {
+  parseQuickHint,
+  parseQuickHintSelection,
+} from '../src/modules/reading-flow/quick-hint';
 import {
   isSupportedOrigin,
   scriptIdFor,
@@ -29,8 +48,22 @@ const focusEvent = 'lingo-palette:focus-selection-toolbar';
 const openAiConfigurationStore = createOpenAiConfigurationStore(
   browser.storage.local,
 );
+const budgetLedger = createBudgetLedger(browser.storage.local);
+const quickHintCacheStorageKey = 'quickHintCacheV1';
+const maximumQuickHintCacheEntries = 100;
+let quickHintCacheWritePending = Promise.resolve();
+let activeOpenAiProbe: AbortController | null = null;
+let openAiActivationVersion = 0;
+let openAiConfigurationMutationPending = Promise.resolve();
+const activeQuickHints = new Map<string, AbortController>();
+const quickHintCacheSchema = z.record(z.string(), z.unknown());
 const controlledResponseQueueSchema = z.array(
-  z.object({ status: z.number().int(), body: z.unknown() }),
+  z.object({
+    status: z.number().int(),
+    body: z.unknown(),
+    delayMs: z.number().int().nonnegative().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+  }),
 );
 const controlledRequestSchema = z.object({
   text: z.object({ format: z.object({ name: z.string() }) }),
@@ -38,6 +71,131 @@ const controlledRequestSchema = z.object({
 const openAiResponsesClient = createOpenAiResponsesClient(
   import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,
 );
+const quickHintExecutor = createQuickHintExecutor({
+  isOnline: async () =>
+    import.meta.env.WXT_TEST_BROWSER === 'true'
+      ? (await browser.storage.local.get('openAiTestOnline'))
+          .openAiTestOnline !== false
+      : navigator.onLine,
+  cache: {
+    async get(key) {
+      const stored = await browser.storage.local.get(quickHintCacheStorageKey);
+      const parsed = quickHintCacheSchema.safeParse(
+        stored[quickHintCacheStorageKey],
+      );
+      if (!parsed.success) return null;
+      const raw = parsed.data[key];
+      try {
+        return parseQuickHint(raw);
+      } catch {
+        return null;
+      }
+    },
+    async put(key, value) {
+      await serializeQuickHintCacheWrite(async () => {
+        const stored = await browser.storage.local.get(quickHintCacheStorageKey);
+        const parsed = quickHintCacheSchema.safeParse(
+          stored[quickHintCacheStorageKey],
+        );
+        const cache = parsed.success ? { ...parsed.data } : {};
+        delete cache[key];
+        cache[key] = value;
+        const keys = Object.keys(cache);
+        for (
+          let index = 0;
+          index < keys.length - maximumQuickHintCacheEntries;
+          index += 1
+        ) {
+          const oldest = keys[index];
+          if (oldest !== undefined) delete cache[oldest];
+        }
+        await browser.storage.local.set({
+          [quickHintCacheStorageKey]: cache,
+        });
+      });
+    },
+  },
+  budget: budgetLedger,
+  provider: {
+    async generate(input, signal) {
+      try {
+        const generated = await openAiResponsesClient.generateQuickHint(
+          input,
+          signal,
+        );
+        return {
+          result: generated.result,
+          usage: providerUsage(input.configuration.model.id, generated.usage),
+        };
+      } catch (error) {
+        if (error instanceof OpenAiProviderError) {
+          throw new AssistanceFailure({
+            kind: error.providerKind,
+            message: error.message,
+            retryable: error.retryable,
+            ...(error.retryAfterMs === undefined
+              ? {}
+              : { retryAfterMs: error.retryAfterMs }),
+            ...(error.usage === undefined
+              ? {}
+              : {
+                  usage: providerUsage(
+                    input.configuration.model.id,
+                    error.usage,
+                  ),
+                }),
+          });
+        }
+        if (error instanceof OpenAiCompatibilityError) {
+          throw new AssistanceFailure({
+            kind: 'incompatible',
+            message: error.message,
+            retryable: false,
+            ...(error.usage === undefined
+              ? {}
+              : {
+                  usage: providerUsage(
+                    input.configuration.model.id,
+                    error.usage,
+                  ),
+                }),
+          });
+        }
+        throw error;
+      }
+    },
+  },
+  wait: waitForRetry,
+  random: Math.random,
+});
+
+async function serializeQuickHintCacheWrite(
+  operation: () => Promise<void>,
+): Promise<void> {
+  const previous = quickHintCacheWritePending;
+  const completion = Promise.withResolvers<void>();
+  quickHintCacheWritePending = completion.promise;
+  await previous;
+  try {
+    await operation();
+  } finally {
+    completion.resolve();
+  }
+}
+
+async function serializeOpenAiConfigurationMutation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = openAiConfigurationMutationPending;
+  const completion = Promise.withResolvers<void>();
+  openAiConfigurationMutationPending = completion.promise;
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    completion.resolve();
+  }
+}
 
 export default defineBackground(() => {
   void initializeBackground();
@@ -79,6 +237,9 @@ async function initializeBackground(): Promise<void> {
       }
       if (message.type === 'quick-hint') {
         return generateQuickHint(message.selection, sender);
+      }
+      if (message.type === 'cancel-quick-hint') {
+        return cancelQuickHint(sender);
       }
       return handleOpenAiSettings(message, sender);
     },
@@ -151,6 +312,24 @@ async function generateQuickHint(
   selection: Selection,
   sender: Browser.runtime.MessageSender,
 ): Promise<QuickHintResponse> {
+  const requestKey = quickHintRequestKey(sender);
+  const controller = new AbortController();
+  activeQuickHints.get(requestKey)?.abort();
+  activeQuickHints.set(requestKey, controller);
+  try {
+    return await generateQuickHintRequest(selection, sender, controller);
+  } finally {
+    if (activeQuickHints.get(requestKey) === controller) {
+      activeQuickHints.delete(requestKey);
+    }
+  }
+}
+
+async function generateQuickHintRequest(
+  selection: Selection,
+  sender: Browser.runtime.MessageSender,
+  controller: AbortController,
+): Promise<QuickHintResponse> {
   const origin = originForSender(sender);
   if (
     origin === null ||
@@ -172,27 +351,49 @@ async function generateQuickHint(
     };
   }
 
+  const settings = await openAiConfigurationStore.loadSettings();
   const runtime = await openAiConfigurationStore.loadRuntimeConfiguration();
-  if (runtime === null) {
-    return {
-      status: 'failed',
-      message: '請先在 Settings 儲存 OpenAI API key。',
-    };
-  }
-
   try {
     if (import.meta.env.WXT_TEST_BROWSER === 'true') {
       await browser.storage.local.set({
         quickHintTestRequest: providerSelection,
       });
     }
-    const generated = await openAiResponsesClient.generateQuickHint({
-      apiKey: runtime.apiKey,
-      configuration: runtime.configuration,
-      selection: providerSelection,
-    });
-    return { status: 'completed', result: generated.result };
+    const outcome = await quickHintExecutor.execute(
+      {
+        apiKey: runtime?.apiKey ?? '',
+        configuration: settings.configuration,
+        selection: providerSelection,
+      },
+      controller.signal,
+      (progress) => {
+        const tabId = sender.tab?.id;
+        if (tabId === undefined) return;
+        void browser.tabs
+          .sendMessage(
+            tabId,
+            {
+              type: 'quick-hint-progress',
+              message: `OpenAI ${progress.kind}；第 ${progress.completedAttempts} 次嘗試未完成，${Math.ceil(progress.delayMs / 100) / 10} 秒後進行第 ${progress.nextAttempt} 次。`,
+            },
+            { frameId: sender.frameId ?? 0 },
+          )
+          .catch(() => undefined);
+      },
+    );
+    return { status: 'completed', ...outcome };
   } catch (error) {
+    if (error instanceof AssistanceFailure) {
+      if (error.kind === 'cancelled') {
+        return { status: 'cancelled', message: error.message };
+      }
+      return {
+        status: 'failed',
+        message: error.message,
+        kind: error.kind,
+        retryable: error.retryable,
+      };
+    }
     return {
       status: 'failed',
       message:
@@ -201,6 +402,13 @@ async function generateQuickHint(
           : 'OpenAI assistance 無法產生 Quick Hint。',
     };
   }
+}
+
+async function cancelQuickHint(
+  sender: Browser.runtime.MessageSender,
+): Promise<QuickHintResponse> {
+  activeQuickHints.get(quickHintRequestKey(sender))?.abort();
+  return { status: 'cancelled', message: '已取消 Quick Hint；Selection 仍保留。' };
 }
 
 async function handleOpenAiSettings(
@@ -215,19 +423,36 @@ async function handleOpenAiSettings(
     if (message.type === 'get-openai-settings') {
       return {
         status: 'loaded',
-        settings: await openAiConfigurationStore.loadSettings(),
+        settings: await loadOpenAiSettings(),
       };
     }
     if (message.type === 'remove-openai-api-key') {
-      await openAiConfigurationStore.removeApiKey();
+      openAiActivationVersion += 1;
+      activeOpenAiProbe?.abort();
+      await serializeOpenAiConfigurationMutation(() =>
+        openAiConfigurationStore.removeApiKey(),
+      );
       return {
         status: 'key-removed',
-        settings: await openAiConfigurationStore.loadSettings(),
+        settings: await loadOpenAiSettings(),
+      };
+    }
+    if (message.type === 'update-openai-budget') {
+      await budgetLedger.configure(message.budget);
+      return {
+        status: 'budget-updated',
+        settings: await loadOpenAiSettings(),
       };
     }
 
     const configuration = validateOpenAiConfiguration(message.configuration);
+    const activationVersion = openAiActivationVersion + 1;
+    openAiActivationVersion = activationVersion;
+    activeOpenAiProbe?.abort();
     const current = await openAiConfigurationStore.loadRuntimeConfiguration();
+    if (activationVersion !== openAiActivationVersion) {
+      throw new Error('此 OpenAI 設定請求已被較新的設定取代。');
+    }
     const apiKey = message.apiKey ?? current?.apiKey;
     if (apiKey === undefined || apiKey.length === 0) {
       return {
@@ -236,17 +461,31 @@ async function handleOpenAiSettings(
       };
     }
 
-    const probes =
-      configuration.model.kind === 'custom'
-        ? await openAiResponsesClient.probeAndReport({
-            apiKey,
-            configuration,
-          })
-        : [];
-    await openAiConfigurationStore.activate(configuration, message.apiKey);
+    let probes: CapabilityProbeReport[] = [];
+    if (configuration.model.kind === 'custom') {
+      const controller = new AbortController();
+      activeOpenAiProbe = controller;
+      try {
+        probes = await runBudgetedProbes(
+          apiKey,
+          configuration,
+          controller.signal,
+        );
+      } finally {
+        if (activeOpenAiProbe === controller) activeOpenAiProbe = null;
+      }
+    }
+    const activated = await serializeOpenAiConfigurationMutation(async () => {
+      if (activationVersion !== openAiActivationVersion) return false;
+      await openAiConfigurationStore.activate(configuration, message.apiKey);
+      return true;
+    });
+    if (!activated) {
+      throw new Error('此 OpenAI 設定請求已被較新的設定取代。');
+    }
     return {
       status: 'activated',
-      settings: await openAiConfigurationStore.loadSettings(),
+      settings: await loadOpenAiSettings(),
       probes,
     };
   } catch (error) {
@@ -275,6 +514,162 @@ async function handleOpenAiSettings(
         error instanceof Error ? error.message : '無法更新 OpenAI 設定。',
     };
   }
+}
+
+async function loadOpenAiSettings(): Promise<OpenAiSettingsSnapshot> {
+  const settings = await openAiConfigurationStore.loadSettings();
+  return {
+    ...settings,
+    budget: await budgetLedger.snapshot(),
+    pricing: {
+      checkedDate: OPENAI_PRICING_CHECKED_DATE,
+      stale: pricingIsStale(new Date()),
+      usageDashboardUrl: OPENAI_USAGE_DASHBOARD_URL,
+      estimatedCostBudgetAvailable:
+        pricingForModel(settings.configuration.model.id) !== null,
+    },
+  };
+}
+
+async function runBudgetedProbes(
+  apiKey: string,
+  configuration: OpenAiConfiguration,
+  signal: AbortSignal,
+) {
+  const effortCount = new Set(Object.values(configuration.efforts)).size;
+  const tokens = effortCount * 8_192;
+  const estimatedCostUsd = estimateOpenAiCost(configuration.model.id, {
+    inputTokens: effortCount * (8_192 - 256),
+    cachedInputTokens: 0,
+    outputTokens: effortCount * 256,
+    reasoningTokens: effortCount * 256,
+    totalTokens: tokens,
+  });
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const reserved = await budgetLedger.reserve({ tokens, estimatedCostUsd });
+    if (reserved.status === 'blocked') {
+      throw new AssistanceFailure({
+        kind: 'local-budget',
+        message:
+          reserved.kind === 'provider-disabled'
+            ? 'OpenAI provider Actions 已由每日上限 0 明確停用。'
+            : '每日 hard limit 無法預留 Custom model capability probes。',
+        retryable: false,
+        budgetKind: reserved.kind,
+      });
+    }
+
+    try {
+      const reports = await openAiResponsesClient.probeAndReport(
+        { apiKey, configuration },
+        signal,
+      );
+      await settleProbeReservation(
+        reserved.reservation,
+        configuration.model.id,
+        reports.map((report) => report.usage),
+      );
+      return reports;
+    } catch (error) {
+      const completed =
+        error instanceof OpenAiCompatibilityError ||
+        error instanceof OpenAiProviderError
+          ? error.completedProbes.map((report) => report.usage)
+          : [];
+      if (
+        (error instanceof OpenAiProviderError ||
+          error instanceof OpenAiCompatibilityError) &&
+        error.usage !== undefined
+      ) {
+        completed.push(error.usage);
+      }
+      await settleProbeReservation(
+        reserved.reservation,
+        configuration.model.id,
+        completed,
+      );
+      if (
+        !(error instanceof OpenAiProviderError) ||
+        !error.retryable ||
+        attempt === 3
+      ) {
+        throw error;
+      }
+      const delay =
+        error.retryAfterMs ??
+        Math.min(5_000, 500 * 2 ** (attempt - 1) * (1 + Math.random() * 0.5));
+      await waitForRetry(delay, signal);
+    }
+  }
+  throw new Error('Capability probe retry loop ended unexpectedly.');
+}
+
+async function settleProbeReservation(
+  reservation: Parameters<typeof budgetLedger.reconcile>[0],
+  model: string,
+  usages: OpenAiUsage[],
+): Promise<void> {
+  if (usages.length === 0) {
+    await budgetLedger.release(reservation);
+    return;
+  }
+  const usage = usages.reduce<ProviderUsage>(
+    (total, current) => {
+      const item = providerUsage(model, current);
+      return {
+        inputTokens: total.inputTokens + item.inputTokens,
+        cachedInputTokens:
+          total.cachedInputTokens + item.cachedInputTokens,
+        outputTokens: total.outputTokens + item.outputTokens,
+        reasoningTokens: total.reasoningTokens + item.reasoningTokens,
+        totalTokens: total.totalTokens + item.totalTokens,
+        estimatedCostUsd:
+          total.estimatedCostUsd === null || item.estimatedCostUsd === null
+            ? null
+            : total.estimatedCostUsd + item.estimatedCostUsd,
+      };
+    },
+    {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+      estimatedCostUsd: 0,
+    },
+  );
+  await budgetLedger.reconcile(reservation, usage);
+}
+
+function providerUsage(model: string, usage: OpenAiUsage): ProviderUsage {
+  return {
+    ...usage,
+    estimatedCostUsd: estimateOpenAiCost(model, usage),
+  };
+}
+
+function quickHintRequestKey(sender: Browser.runtime.MessageSender): string {
+  return `${sender.tab?.id ?? 'unknown'}:${sender.frameId ?? 0}`;
+}
+
+async function waitForRetry(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+  const deferred = Promise.withResolvers<void>();
+  const timer = setTimeout(deferred.resolve, delayMs);
+  signal.addEventListener(
+    'abort',
+    () => {
+      clearTimeout(timer);
+      deferred.reject(new DOMException('Aborted', 'AbortError'));
+    },
+    { once: true },
+  );
+  return deferred.promise;
 }
 
 function isTrustedExtensionSender(
@@ -307,7 +702,16 @@ async function controlledOpenAiFetch(
     openAiTestResponses: queue.slice(1),
   });
   if (next !== undefined) {
-    return Response.json(next.body, { status: next.status });
+    if (next.delayMs !== undefined) {
+      await waitForRetry(
+        next.delayMs,
+        init?.signal ?? new AbortController().signal,
+      );
+    }
+    return Response.json(next.body, {
+      status: next.status,
+      ...(next.headers === undefined ? {} : { headers: next.headers }),
+    });
   }
 
   const output =
@@ -321,7 +725,13 @@ async function controlledOpenAiFetch(
         content: [{ type: 'output_text', text: JSON.stringify(output) }],
       },
     ],
-    usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+    usage: {
+      input_tokens: 11,
+      input_tokens_details: { cached_tokens: 3 },
+      output_tokens: 7,
+      output_tokens_details: { reasoning_tokens: 2 },
+      total_tokens: 18,
+    },
   });
 }
 

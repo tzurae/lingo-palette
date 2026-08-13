@@ -13,6 +13,10 @@ import {
   OPENAI_API_KEY_STORAGE_KEY,
   OPENAI_CONFIGURATION_STORAGE_KEY,
 } from './modules/openai/configuration-store';
+import {
+  OPENAI_BUDGET_LEDGER_STORAGE_KEY,
+  OPENAI_BUDGET_SETTINGS_STORAGE_KEY,
+} from './modules/openai/budget-ledger';
 
 declare const chrome: typeof browser;
 
@@ -205,7 +209,7 @@ describe('unpacked extension Reading Flow', () => {
     await quickHintButton.click();
     await expect
       .poll(() => page.getByRole('status').textContent())
-      .toBe('快速提示已完成。');
+      .toContain('快速提示已完成；第 1 次 provider 嘗試成功，共 18 tokens');
     expect(
       await quickHintButton.evaluate(
         (button) =>
@@ -439,19 +443,50 @@ describe('unpacked extension Reading Flow', () => {
     await deepDiveEffort.selectOption('high');
     await reviewEffort.selectOption('max');
     await personalInstructions.fill('Keep Traditional Chinese cues concise.');
+    const probeRequestCount = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get('openAiTestRequests');
+      const requests = Array.isArray(stored.openAiTestRequests)
+        ? stored.openAiTestRequests
+        : [];
+      await chrome.storage.local.set({
+        openAiTestResponses: [
+          {
+            status: 503,
+            headers: { 'Retry-After': '0' },
+            body: {
+              error: {
+                code: 'server_error',
+                message: 'Temporary probe outage',
+              },
+            },
+          },
+        ],
+      });
+      return requests.length;
+    });
     await settings.getByRole('button', { name: '測試並啟用' }).click();
     await expect
       .poll(() => settings.locator('#openai-status').textContent())
       .toContain('全部 3 個 capability probes 通過');
     await expect
-      .poll(() => settings.getByText(/minimal：input 11、output 7、total 18/).isVisible())
+      .poll(() => settings.getByText(/minimal：input 11（cached 3）、output 7（reasoning 2）、total 18/).isVisible())
       .toBe(true);
     await expect
-      .poll(() => settings.getByText(/high：input 11、output 7、total 18/).isVisible())
+      .poll(() => settings.getByText(/high：input 11（cached 3）、output 7（reasoning 2）、total 18/).isVisible())
       .toBe(true);
     await expect
-      .poll(() => settings.getByText(/max：input 11、output 7、total 18/).isVisible())
+      .poll(() => settings.getByText(/max：input 11（cached 3）、output 7（reasoning 2）、total 18/).isVisible())
       .toBe(true);
+    await expect
+      .poll(async () =>
+        worker.evaluate(async () => {
+          const stored = await chrome.storage.local.get('openAiTestRequests');
+          return Array.isArray(stored.openAiTestRequests)
+            ? stored.openAiTestRequests.length
+            : 0;
+        }),
+      )
+      .toBe(probeRequestCount + 4);
 
     const activated = await worker.evaluate(
       async ([configurationKey, apiKeyKey]) =>
@@ -538,7 +573,7 @@ describe('unpacked extension Reading Flow', () => {
     await expect
       .poll(() =>
         settings
-          .getByText(/minimal：input 11、output 7、total 18/)
+          .getByText(/minimal：input 11（cached 0）、output 7（reasoning 0）、total 18/)
           .isVisible(),
       )
       .toBe(true);
@@ -556,6 +591,401 @@ describe('unpacked extension Reading Flow', () => {
       personalInstructions: 'Keep Traditional Chinese cues concise.',
     });
     await settings.close();
+  });
+
+  it('shows, validates, and persists daily hard limits with usage and pricing provenance', async () => {
+    const settings = await context.newPage();
+    await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
+    const tokenLimit = settings.getByLabel('Provider token 上限');
+    const costLimit = settings.getByLabel('Estimated-cost 上限（US$）');
+    await expect.poll(() => tokenLimit.inputValue()).toBe('100000');
+    await expect.poll(() => costLimit.inputValue()).toBe('1');
+    await expect
+      .poll(() => settings.locator('#budget-usage').textContent())
+      .toContain('下次本機重設');
+    await expect
+      .poll(() => settings.locator('#pricing-status').textContent())
+      .toContain('目前模型價格未知');
+    await expect
+      .poll(() => settings.getByRole('link', { name: '開啟 OpenAI Usage Dashboard' }).getAttribute('href'))
+      .toBe('https://platform.openai.com/usage');
+
+
+    await tokenLimit.fill('');
+    await costLimit.fill('');
+    await settings.getByRole('button', { name: '儲存每日 hard limits' }).click();
+    await expect
+      .poll(() => settings.locator('#budget-status').textContent())
+      .toContain('不可空白');
+    const unchanged = await worker.evaluate(
+      async (key) => (await chrome.storage.local.get(key))[key],
+      OPENAI_BUDGET_SETTINGS_STORAGE_KEY,
+    );
+    expect(unchanged).toBeUndefined();
+    await tokenLimit.fill('25000');
+    await costLimit.fill('0.50');
+    await settings.getByRole('button', { name: '儲存每日 hard limits' }).click();
+    await expect
+      .poll(() => settings.locator('#budget-status').textContent())
+      .toContain('已儲存');
+    const stored = await worker.evaluate(
+      async (key) => (await chrome.storage.local.get(key))[key],
+      OPENAI_BUDGET_SETTINGS_STORAGE_KEY,
+    );
+    expect(stored).toEqual({
+      tokenLimit: 25_000,
+      estimatedCostUsdLimit: 0.5,
+    });
+    await settings.close();
+  });
+
+  it('prevents a stale custom probe from overwriting a newer curated activation', async () => {
+    const settings = await context.newPage();
+    await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
+    const priorRequests = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get('openAiTestRequests');
+      await chrome.storage.local.set({
+        openAiTestResponses: [
+          {
+            status: 200,
+            delayMs: 200,
+            body: {
+              output: [
+                {
+                  type: 'message',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: JSON.stringify({ compatible: true }),
+                    },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 11,
+                output_tokens: 7,
+                total_tokens: 18,
+              },
+            },
+          },
+        ],
+      });
+      return Array.isArray(stored.openAiTestRequests)
+        ? stored.openAiTestRequests.length
+        : 0;
+    });
+
+    await settings.evaluate(() => {
+      const state = globalThis as typeof globalThis & {
+        staleActivation: Promise<unknown>;
+      };
+      state.staleActivation = chrome.runtime.sendMessage({
+        type: 'activate-openai-configuration',
+        apiKey: 'sk-stale-custom',
+        configuration: {
+          model: { kind: 'custom', id: 'gpt-stale-custom' },
+          efforts: {
+            quickHint: 'low',
+            deepDive: 'low',
+            review: 'low',
+          },
+          personalInstructions: '',
+        },
+      });
+    });
+    await expect
+      .poll(() =>
+        worker.evaluate(async () => {
+          const stored = await chrome.storage.local.get('openAiTestRequests');
+          return Array.isArray(stored.openAiTestRequests)
+            ? stored.openAiTestRequests.length
+            : 0;
+        }),
+      )
+      .toBe(priorRequests + 1);
+    const current = await settings.evaluate(() =>
+      chrome.runtime.sendMessage({
+        type: 'activate-openai-configuration',
+        apiKey: 'sk-current-curated',
+        configuration: {
+          model: { kind: 'curated', id: 'gpt-5.4-mini-2026-03-17' },
+          efforts: {
+            quickHint: 'low',
+            deepDive: 'medium',
+            review: 'medium',
+          },
+          personalInstructions: '',
+        },
+      }),
+    );
+    const stale = await settings.evaluate(async () => {
+      const state = globalThis as typeof globalThis & {
+        staleActivation: Promise<unknown>;
+      };
+      return state.staleActivation;
+    });
+    expect(current).toMatchObject({ status: 'activated' });
+    expect(stale).toMatchObject({ status: 'failed' });
+
+    const active = await worker.evaluate(
+      async (configurationKey) =>
+        (await chrome.storage.local.get(configurationKey))[configurationKey],
+      OPENAI_CONFIGURATION_STORAGE_KEY,
+    );
+    expect(active).toMatchObject({
+      model: { kind: 'curated', id: 'gpt-5.4-mini-2026-03-17' },
+    });
+    const restored = await settings.evaluate(() =>
+      chrome.runtime.sendMessage({
+        type: 'activate-openai-configuration',
+        apiKey: 'sk-replacement-device-key',
+        configuration: {
+          model: {
+            kind: 'custom',
+            id: 'ft:gpt-5.4-mini:team:Reading-Exact',
+          },
+          efforts: {
+            quickHint: 'minimal',
+            deepDive: 'high',
+            review: 'max',
+          },
+          personalInstructions: 'Keep Traditional Chinese cues concise.',
+        },
+      }),
+    );
+    expect(restored).toMatchObject({ status: 'activated' });
+    await settings.close();
+  });
+
+  it('serves a matching cache entry offline before reporting an offline cache miss', async () => {
+    await worker.evaluate(async () => {
+      await chrome.storage.local.set({ openAiTestOnline: true });
+      await chrome.storage.local.remove('openAiTestResponses');
+    });
+    await selectTextByPointer(page, '#copy', 'The committee');
+    await page.getByRole('button', { name: '快速提示' }).click();
+    await expect
+      .poll(() => page.getByRole('status').textContent())
+      .toContain('provider 嘗試成功');
+
+    await worker.evaluate(async () => {
+      await chrome.storage.local.set({ openAiTestOnline: false });
+    });
+    try {
+      await page.getByRole('button', { name: '快速提示' }).click();
+      await expect
+        .poll(() => page.getByRole('status').textContent())
+        .toContain('本機快取載入；未使用 provider budget');
+      await closeReadingFlowSurface();
+      await selectTextByPointer(page, '#copy', 'decided to');
+      await page.getByRole('button', { name: '快速提示' }).click();
+      await expect
+        .poll(() => page.getByRole('status').textContent())
+        .toContain('目前離線');
+    } finally {
+      await worker.evaluate(async () => {
+        await chrome.storage.local.set({ openAiTestOnline: true });
+      });
+    }
+  });
+
+  it('shows retry waiting, retry exhaustion, and a later successful third attempt', async () => {
+    await closeReadingFlowSurface();
+    const serverFailure = {
+      status: 503,
+      headers: { 'Retry-After': '0.3' },
+      body: { error: { code: 'server_error', message: 'Temporary outage' } },
+    };
+    await worker.evaluate(async (responses) => {
+      await chrome.storage.local.set({
+        openAiTestRequests: [],
+        openAiTestResponses: responses,
+      });
+    }, [serverFailure, serverFailure, serverFailure]);
+    await selectTextByPointer(page, '#copy', 'committee decided');
+    await page.getByRole('button', { name: '快速提示' }).click();
+    await expect
+      .poll(() => page.getByRole('status').textContent())
+      .toContain('第 1 次嘗試未完成');
+    await expect
+      .poll(() => page.getByRole('status').textContent())
+      .toContain('retry 已用完 3 次');
+    const exhaustedRequests = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get('openAiTestRequests');
+      return stored.openAiTestRequests;
+    });
+    expect(exhaustedRequests).toHaveLength(3);
+    await closeReadingFlowSurface();
+
+    await worker.evaluate(async (responses) => {
+      await chrome.storage.local.set({
+        openAiTestRequests: [],
+        openAiTestResponses: responses,
+      });
+    }, [
+      { ...serverFailure, headers: { 'Retry-After': '0.1' } },
+      { ...serverFailure, headers: { 'Retry-After': '0.1' } },
+    ]);
+    await selectTextByPointer(page, '#copy', 'vote until');
+    await page.getByRole('button', { name: '快速提示' }).click();
+    await expect
+      .poll(() => page.getByRole('status').textContent())
+      .toContain('第 3 次 provider 嘗試成功');
+  });
+
+  it('cancels active provider work, preserves Selection, and releases its reservation', async () => {
+    await closeReadingFlowSurface();
+    await worker.evaluate(async () => {
+      await chrome.storage.local.set({
+        openAiTestRequests: [],
+        openAiTestResponses: [
+          {
+            status: 200,
+            delayMs: 10_000,
+            body: {
+              output: [],
+              usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+            },
+          },
+        ],
+      });
+    });
+    await replaceCopyAndSelect('cancel active request');
+    await page.getByRole('button', { name: '快速提示' }).click();
+    await expect
+      .poll(async () =>
+        worker.evaluate(async () => {
+          const stored = await chrome.storage.local.get('openAiTestRequests');
+          return Array.isArray(stored.openAiTestRequests)
+            ? stored.openAiTestRequests.length
+            : 0;
+        }),
+      )
+      .toBe(1);
+    await page.getByRole('button', { name: '取消快速提示' }).click();
+    await expect
+      .poll(() => page.getByRole('status').textContent())
+      .toContain('已取消 Quick Hint；Selection 仍保留');
+    expect(await page.evaluate(() => document.getSelection()?.toString())).toBe(
+      'cancel active request',
+    );
+    await expect
+      .poll(async () =>
+        worker.evaluate(async (key) => {
+          const stored = await chrome.storage.local.get(key);
+          const ledger = stored[key];
+          return typeof ledger === 'object' &&
+            ledger !== null &&
+            'reservations' in ledger &&
+            typeof ledger.reservations === 'object' &&
+            ledger.reservations !== null
+            ? Object.keys(ledger.reservations).length
+            : -1;
+        }, OPENAI_BUDGET_LEDGER_STORAGE_KEY),
+      )
+      .toBe(0);
+  });
+
+  it('surfaces every terminal provider failure without retry and blocks locally at zero', async () => {
+    const cases = [
+      {
+        selection: 'The',
+        status: 401,
+        code: 'invalid_api_key',
+        providerMessage: 'Invalid key',
+        expected: 'authentication 失敗',
+      },
+      {
+        selection: 'committee',
+        status: 403,
+        code: 'permission_denied',
+        providerMessage: 'Denied',
+        expected: 'permission 失敗',
+      },
+      {
+        selection: 'decided',
+        status: 400,
+        code: 'invalid_request_error',
+        providerMessage: 'Bad input',
+        expected: 'malformed request',
+      },
+      {
+        selection: 'vote',
+        status: 429,
+        code: 'billing_not_active',
+        providerMessage: 'No credit',
+        expected: 'provider credit 不足',
+      },
+      {
+        selection: 'until',
+        status: 429,
+        code: 'insufficient_quota',
+        providerMessage: 'Quota exhausted',
+        expected: 'provider quota 已耗盡',
+      },
+      {
+        selection: 'week',
+        status: 429,
+        code: 'billing_hard_limit_reached',
+        providerMessage: 'Spend limit',
+        expected: 'spend limit 已到達',
+      },
+    ] as const;
+    for (const current of cases) {
+      await closeReadingFlowSurface();
+      await worker.evaluate(async (failure) => {
+        await chrome.storage.local.set({
+          openAiTestRequests: [],
+          openAiTestResponses: [
+            {
+              status: failure.status,
+              body: {
+                error: {
+                  code: failure.code,
+                  message: failure.providerMessage,
+                },
+              },
+            },
+          ],
+        });
+      }, current);
+      await replaceCopyAndSelect(current.selection);
+      await page.getByRole('button', { name: '快速提示' }).click();
+      await expect
+        .poll(() => page.getByRole('status').textContent())
+        .toContain(current.expected);
+      expect(
+        await page.evaluate(() => document.getSelection()?.toString()),
+      ).toBe(current.selection);
+      const requests = await worker.evaluate(async () => {
+        const stored = await chrome.storage.local.get('openAiTestRequests');
+        return stored.openAiTestRequests;
+      });
+      expect(requests).toHaveLength(1);
+    }
+
+    await closeReadingFlowSurface();
+    await worker.evaluate(async (key) => {
+      await chrome.storage.local.set({
+        [key]: { tokenLimit: 0, estimatedCostUsdLimit: 0.5 },
+        openAiTestRequests: [],
+      });
+    }, OPENAI_BUDGET_SETTINGS_STORAGE_KEY);
+    await replaceCopyAndSelect('local budget block');
+    await page.getByRole('button', { name: '快速提示' }).click();
+    await expect
+      .poll(() => page.getByRole('status').textContent())
+      .toContain('provider Actions 已由每日上限 0 明確停用');
+    const blockedRequests = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get('openAiTestRequests');
+      return stored.openAiTestRequests;
+    });
+    expect(blockedRequests).toHaveLength(0);
+    await worker.evaluate(async (key) => {
+      await chrome.storage.local.set({
+        [key]: { tokenLimit: 25_000, estimatedCostUsdLimit: 0.5 },
+      });
+    }, OPENAI_BUDGET_SETTINGS_STORAGE_KEY);
   });
 
   it('keeps portable configuration after an offline browser restart while the key remains removable', async () => {
@@ -656,8 +1086,20 @@ async function assertSurfaceInsideViewport(): Promise<void> {
   expect(bounds.bottom).toBeLessThanOrEqual(viewport.height);
 }
 
+async function closeReadingFlowSurface(): Promise<void> {
+  const close = page.getByRole('button', { name: '關閉 Lingo Palette' });
+  if (await close.isVisible()) await close.click();
+}
 
 
+
+
+async function replaceCopyAndSelect(text: string): Promise<void> {
+  await page.locator('#copy').evaluate((element, value) => {
+    element.textContent = value;
+  }, text);
+  await selectNodeContents(page, '#copy');
+}
 
 async function selectTextByPointer(
   pageTarget: Page,

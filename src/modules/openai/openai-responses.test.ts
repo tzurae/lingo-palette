@@ -36,7 +36,13 @@ function parseRequestBody(init: RequestInit | undefined) {
 
 function completedResponse(
   output: unknown,
-  usage = { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+  usage = {
+    input_tokens: 11,
+    input_tokens_details: { cached_tokens: 3 },
+    output_tokens: 7,
+    output_tokens_details: { reasoning_tokens: 2 },
+    total_tokens: 18,
+  },
 ): Response {
   return Response.json({
     output: [
@@ -66,12 +72,24 @@ describe('OpenAI Responses client', () => {
       {
         model: 'gpt-custom-exact',
         effort: 'low',
-        usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+        usage: {
+          inputTokens: 11,
+          cachedInputTokens: 3,
+          outputTokens: 7,
+          reasoningTokens: 2,
+          totalTokens: 18,
+        },
       },
       {
         model: 'gpt-custom-exact',
         effort: 'medium',
-        usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+        usage: {
+          inputTokens: 11,
+          cachedInputTokens: 3,
+          outputTokens: 7,
+          reasoningTokens: 2,
+          totalTokens: 18,
+        },
       },
     ]);
 
@@ -146,7 +164,13 @@ describe('OpenAI Responses client', () => {
         {
           model: 'gpt-custom-exact',
           effort: 'low',
-          usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+          usage: {
+            inputTokens: 11,
+            cachedInputTokens: 3,
+            outputTokens: 7,
+            reasoningTokens: 2,
+            totalTokens: 18,
+          },
         },
       ],
     });
@@ -268,7 +292,13 @@ describe('OpenAI Responses client', () => {
         simplerExpression: 'delay until later',
         explanationCue: '延後處理',
       },
-      usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+      usage: {
+        inputTokens: 11,
+        cachedInputTokens: 3,
+        outputTokens: 7,
+        reasoningTokens: 2,
+        totalTokens: 18,
+      },
     });
 
     expect(request).toMatchObject({
@@ -289,6 +319,161 @@ describe('OpenAI Responses client', () => {
     expect(serialized).not.toMatch(/url|title|DOM|permission|Lookup history/i);
   });
 
+  it.each([
+    {
+      status: 401,
+      body: { error: { code: 'invalid_api_key', message: 'Invalid key' } },
+      kind: 'authentication',
+      retryable: false,
+    },
+    {
+      status: 403,
+      body: { error: { code: 'permission_denied', message: 'Denied' } },
+      kind: 'permission',
+      retryable: false,
+    },
+    {
+      status: 400,
+      body: { error: { code: 'invalid_request_error', message: 'Bad input' } },
+      kind: 'malformed-request',
+      retryable: false,
+    },
+    {
+      status: 429,
+      body: {
+        error: { code: 'insufficient_quota', message: 'Quota exhausted' },
+      },
+      kind: 'provider-quota',
+      retryable: false,
+    },
+    {
+      status: 429,
+      body: {
+        error: { code: 'billing_hard_limit_reached', message: 'Spend limit' },
+      },
+      kind: 'spend-limit',
+      retryable: false,
+    },
+    {
+      status: 429,
+      body: {
+        error: {
+          code: 'rate_limit_exceeded',
+          message: 'Temporary rate limit',
+        },
+      },
+      kind: 'rate-limit',
+      retryable: true,
+      retryAfterMs: 2_000,
+    },
+    {
+      status: 500,
+      body: { error: { code: 'server_error', message: 'Server error' } },
+      kind: 'server',
+      retryable: true,
+    },
+  ] as const)(
+    'classifies runtime $kind without fallback',
+    async ({ status, body, kind, retryable, retryAfterMs }) => {
+      const client = createOpenAiResponsesClient(async () =>
+        Response.json(body, {
+          status,
+          ...(retryAfterMs === undefined
+            ? {}
+            : { headers: { 'Retry-After': String(retryAfterMs / 1_000) } }),
+        }),
+      );
+
+      await expect(
+        client.generateQuickHint({
+          apiKey: 'sk-runtime',
+          configuration: customConfiguration,
+          selection: { text: 'postpone', context: { before: '', after: '' } },
+        }),
+      ).rejects.toMatchObject({
+        providerKind: kind,
+        retryable,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      });
+    },
+  );
+
+  it('classifies a timeout while reading the response body as retryable', async () => {
+    const response = Response.json({});
+    Object.defineProperty(response, 'json', {
+      value: async () => {
+        throw new DOMException('Body timed out', 'TimeoutError');
+      },
+    });
+    const client = createOpenAiResponsesClient(async () => response);
+
+    await expect(
+      client.generateQuickHint({
+        apiKey: 'sk-runtime',
+        configuration: customConfiguration,
+        selection: { text: 'postpone', context: { before: '', after: '' } },
+      }),
+    ).rejects.toMatchObject({
+      providerKind: 'timeout',
+      retryable: true,
+    });
+  });
+
+  it('classifies a response-body connection failure as retryable', async () => {
+    const response = Response.json({});
+    Object.defineProperty(response, 'json', {
+      value: async () => {
+        throw new TypeError('terminated');
+      },
+    });
+    const client = createOpenAiResponsesClient(async () => response);
+
+    await expect(
+      client.generateQuickHint({
+        apiKey: 'sk-runtime',
+        configuration: customConfiguration,
+        selection: { text: 'postpone', context: { before: '', after: '' } },
+      }),
+    ).rejects.toMatchObject({
+      providerKind: 'connection',
+      retryable: true,
+    });
+  });
+
+  it('retains reported usage on a capability incompatibility response', async () => {
+    const client = createOpenAiResponsesClient(async () =>
+      Response.json(
+        {
+          error: {
+            code: 'invalid_value',
+            param: 'reasoning.effort',
+            message: 'Unsupported effort',
+          },
+          usage: {
+            input_tokens: 13,
+            output_tokens: 5,
+            total_tokens: 18,
+          },
+        },
+        { status: 400 },
+      ),
+    );
+
+    await expect(
+      client.probeAndReport({
+        apiKey: 'sk-probe',
+        configuration: customConfiguration,
+      }),
+    ).rejects.toMatchObject({
+      kind: 'effort',
+      usage: {
+        inputTokens: 13,
+        outputTokens: 5,
+        totalTokens: 18,
+      },
+    });
+  });
+
   it('reports a later Structured Outputs incompatibility without changing model or effort', async () => {
     const client = createOpenAiResponsesClient(async () =>
       completedResponse({ explanationCue: null }),
@@ -307,6 +492,11 @@ describe('OpenAI Responses client', () => {
       kind: 'structured-outputs',
       model: 'gpt-custom-exact',
       effort: 'low',
+      usage: {
+        inputTokens: 11,
+        outputTokens: 7,
+        totalTokens: 18,
+      },
     });
   });
 });

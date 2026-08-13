@@ -54,6 +54,19 @@ function startReadingFlow(): void {
     if (document.activeElement instanceof HTMLIFrameElement) return;
     showForCurrentSelection(true);
   });
+  browser.runtime.onMessage.addListener((message: unknown) => {
+    if (
+      quickHintBusy &&
+      typeof message === 'object' &&
+      message !== null &&
+      'type' in message &&
+      message.type === 'quick-hint-progress' &&
+      'message' in message &&
+      typeof message.message === 'string'
+    ) {
+      setStatus(message.message);
+    }
+  });
   window.addEventListener('scroll', placeSurface, true);
   window.addEventListener('resize', placeSurface);
   document.addEventListener('keydown', (event) => {
@@ -132,7 +145,13 @@ function startReadingFlow(): void {
 
     const quickHint = createElement('button', 'primary', '快速提示');
     quickHint.disabled = selectionLength > SELECTION_LIMIT;
-    quickHint.addEventListener('click', () => void requestQuickHint());
+    quickHint.addEventListener('click', () => {
+      if (quickHintBusy) {
+        void cancelActiveQuickHint();
+        return;
+      }
+      void requestQuickHint();
+    });
     section.append(quickHint);
 
     if (selectionLength > SELECTION_LIMIT) {
@@ -166,6 +185,9 @@ function startReadingFlow(): void {
 
   function invalidateQuickHintRequest(): void {
     quickHintRequestVersion += 1;
+    if (quickHintBusy) {
+      void browser.runtime.sendMessage({ type: 'cancel-quick-hint' });
+    }
     quickHintBusy = false;
   }
 
@@ -206,7 +228,7 @@ function startReadingFlow(): void {
     }
     quickHintBusy = false;
     setBusy(false);
-    if (response.status === 'failed') {
+    if (response.status === 'failed' || response.status === 'cancelled') {
       setStatus(response.message);
       return;
     }
@@ -226,8 +248,28 @@ function startReadingFlow(): void {
       );
     }
     section.insertBefore(result, section.querySelector('[role="status"]'));
-    setStatus('快速提示已完成。');
+    setStatus(completedStatus(response));
     placeSurface();
+  }
+
+  async function cancelActiveQuickHint(): Promise<void> {
+    if (!quickHintBusy) return;
+    quickHintRequestVersion += 1;
+    quickHintBusy = false;
+    setBusy(false);
+    setStatus('正在取消快速提示…');
+    try {
+      const response = (await browser.runtime.sendMessage({
+        type: 'cancel-quick-hint',
+      })) as QuickHintResponse;
+      setStatus(
+        response.status === 'completed'
+          ? '快速提示已完成。'
+          : response.message,
+      );
+    } catch {
+      setStatus('已取消 Quick Hint；Selection 仍保留。');
+    }
   }
 
   function closeSurface(restoreFocus: boolean): void {
@@ -282,12 +324,26 @@ function startReadingFlow(): void {
     setStatus(message);
   }
 
+  function completedStatus(
+    response: Extract<QuickHintResponse, { status: 'completed' }>,
+  ): string {
+    if (response.source === 'cache') {
+      return '快速提示已從本機快取載入；未使用 provider budget。';
+    }
+    if (response.usage === null) return '快速提示已完成。';
+    const cost =
+      response.usage.estimatedCostUsd === null
+        ? '此模型沒有本機價格估算'
+        : `估算 US$${response.usage.estimatedCostUsd.toFixed(6)}`;
+    return `快速提示已完成；第 ${response.attempts} 次 provider 嘗試成功，共 ${response.usage.totalTokens.toLocaleString('en-US')} tokens（input ${response.usage.inputTokens.toLocaleString('en-US')}，cached input ${response.usage.cachedInputTokens.toLocaleString('en-US')}，output ${response.usage.outputTokens.toLocaleString('en-US')}，reasoning ${response.usage.reasoningTokens.toLocaleString('en-US')}），${cost}。`;
+  }
+
   function setBusy(busy: boolean): void {
     const section = shadow?.querySelector<HTMLElement>('section');
     section?.setAttribute('aria-busy', String(busy));
     const button = shadow?.querySelector<HTMLButtonElement>('.primary');
     if (button !== null && button !== undefined) {
-      button.setAttribute('aria-disabled', String(busy));
+      button.textContent = busy ? '取消快速提示' : '快速提示';
     }
   }
 
