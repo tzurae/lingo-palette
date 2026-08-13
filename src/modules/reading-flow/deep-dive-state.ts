@@ -1,0 +1,226 @@
+import { z } from 'zod';
+import { parseDeepDive, type DeepDiveResult } from './deep-dive';
+import {
+  codePointLength,
+  CONTEXT_LIMIT,
+  SELECTION_LIMIT,
+  type Selection,
+} from './selection';
+
+export const DEEP_DIVE_STATE_STORAGE_KEY = 'deepDiveStateV1';
+
+const boundedText = (limit: number) =>
+  z.string().refine((value) => codePointLength(value) <= limit);
+const selectionSchema = z.object({
+  text: boundedText(SELECTION_LIMIT).refine((value) => value.length > 0),
+  context: z.object({
+    before: boundedText(CONTEXT_LIMIT),
+    after: boundedText(CONTEXT_LIMIT),
+  }),
+});
+const currentSchema = z.object({
+  selection: selectionSchema,
+  result: z.unknown(),
+  completedAt: z.string().datetime(),
+});
+const requestSchema = z.object({
+  id: z.string().min(1),
+  selection: selectionSchema,
+  status: z.enum(['working', 'failed', 'cancelled']),
+  message: z.string(),
+  requestedAt: z.string().datetime(),
+});
+const storedStateSchema = z.object({
+  version: z.literal(1),
+  current: currentSchema.nullable(),
+  request: requestSchema.nullable(),
+});
+
+export type DeepDiveCurrent = {
+  selection: Selection;
+  result: DeepDiveResult;
+  completedAt: string;
+};
+export type DeepDiveRequestState = {
+  id: string;
+  selection: Selection;
+  status: 'working' | 'failed' | 'cancelled';
+  message: string;
+  requestedAt: string;
+};
+export type DeepDiveState = {
+  current: DeepDiveCurrent | null;
+  request: DeepDiveRequestState | null;
+};
+export type DeepDiveStateStorage = {
+  get(key: string): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+};
+export type DeepDiveOutcome =
+  | { status: 'completed'; result: DeepDiveResult }
+  | { status: 'failed' | 'cancelled'; message: string };
+
+const emptyState = (): DeepDiveState => ({ current: null, request: null });
+
+export function createDeepDiveStateStore(
+  storage: DeepDiveStateStorage,
+  dependencies: {
+    id?: () => string;
+    now?: () => string;
+  } = {},
+): {
+  load(): Promise<DeepDiveState>;
+  begin(selection: Selection): Promise<DeepDiveRequestState>;
+  settle(requestId: string, outcome: DeepDiveOutcome): Promise<DeepDiveState>;
+  cancel(requestId: string, message: string): Promise<DeepDiveState>;
+  interruptRunning(): Promise<DeepDiveState>;
+} {
+  const id = dependencies.id ?? (() => crypto.randomUUID());
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  let pending = Promise.resolve();
+  const cancelledRequestIds = new Set<string>();
+
+  const serialized = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const previous = pending;
+    const completion = Promise.withResolvers<void>();
+    pending = completion.promise;
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      completion.resolve();
+    }
+  };
+
+  const loadUnsafe = async (): Promise<DeepDiveState> => {
+    const stored = await storage.get(DEEP_DIVE_STATE_STORAGE_KEY);
+    const parsed = storedStateSchema.safeParse(
+      stored[DEEP_DIVE_STATE_STORAGE_KEY],
+    );
+    if (!parsed.success) return emptyState();
+    try {
+      return {
+        current:
+          parsed.data.current === null
+            ? null
+            : {
+                ...parsed.data.current,
+                result: parseDeepDive(parsed.data.current.result),
+              },
+        request: parsed.data.request,
+      };
+    } catch {
+      return emptyState();
+    }
+  };
+
+  const save = async (state: DeepDiveState): Promise<void> => {
+    await storage.set({
+      [DEEP_DIVE_STATE_STORAGE_KEY]: { version: 1, ...state },
+    });
+  };
+
+  return {
+    async load() {
+      return serialized(loadUnsafe);
+    },
+
+    async begin(selection) {
+      return serialized(async () => {
+        const state = await loadUnsafe();
+        const request: DeepDiveRequestState = {
+          id: id(),
+          selection: selectionSchema.parse(selection),
+          status: 'working',
+          message: '正在產生 Deep Dive…',
+          requestedAt: now(),
+        };
+        await save({ ...state, request });
+        return request;
+      });
+    },
+
+    async settle(requestId, outcome) {
+      return serialized(async () => {
+        const state = await loadUnsafe();
+        if (
+          state.request?.id !== requestId ||
+          state.request.status !== 'working'
+        ) {
+          return state;
+        }
+        if (
+          outcome.status === 'completed' &&
+          cancelledRequestIds.has(requestId)
+        ) {
+          return state;
+        }
+        if (outcome.status === 'completed') {
+          const next: DeepDiveState = {
+            current: {
+              selection: state.request.selection,
+              result: parseDeepDive(outcome.result),
+              completedAt: now(),
+            },
+            request: null,
+          };
+          await save(next);
+          return next;
+        }
+        const next: DeepDiveState = {
+          ...state,
+          request: {
+            ...state.request,
+            status: outcome.status,
+            message: outcome.message,
+          },
+        };
+        await save(next);
+        return next;
+      });
+    },
+
+    cancel(requestId, message) {
+      cancelledRequestIds.add(requestId);
+      return serialized(async () => {
+        const state = await loadUnsafe();
+        if (
+          state.request?.id !== requestId ||
+          state.request.status !== 'working'
+        ) {
+          cancelledRequestIds.delete(requestId);
+          return state;
+        }
+        const next: DeepDiveState = {
+          ...state,
+          request: {
+            ...state.request,
+            status: 'cancelled',
+            message,
+          },
+        };
+        await save(next);
+        cancelledRequestIds.delete(requestId);
+        return next;
+      });
+    },
+
+    async interruptRunning() {
+      return serialized(async () => {
+        const state = await loadUnsafe();
+        if (state.request?.status !== 'working') return state;
+        const next: DeepDiveState = {
+          ...state,
+          request: {
+            ...state.request,
+            status: 'failed',
+            message:
+              'Deep Dive 因 extension background 中斷；Selection 已保留，可明確重試。',
+          },
+        };
+        await save(next);
+        return next;
+      });
+    },
+  };
+}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lingo Palette Deep Dive</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">Lingo Palette</p>
+      <h1>Reading workspace</h1>
+    </header>
+    <nav aria-label="Reading destinations">
+      <div role="tablist" aria-label="Reading workspace views">
+        <button id="current-tab" role="tab" aria-selected="true" aria-controls="current-panel" tabindex="0">Current</button>
+        <button id="recent-tab" role="tab" aria-selected="false" aria-controls="recent-panel" tabindex="-1">Recent</button>
+        <button id="saved-tab" role="tab" aria-selected="false" aria-controls="saved-panel" tabindex="-1">Saved</button>
+      </div>
+    </nav>
+    <main>
+      <section id="current-panel" role="tabpanel" aria-labelledby="current-tab" tabindex="0">
+        <div id="current-content">
+          <p>正在讀取 Current…</p>
+        </div>
+      </section>
+      <section id="recent-panel" role="tabpanel" aria-labelledby="recent-tab" tabindex="0" hidden>
+        <h2>Recent</h2>
+        <p>目前沒有最近的 Lookup Records。</p>
+      </section>
+      <section id="saved-panel" role="tabpanel" aria-labelledby="saved-tab" tabindex="0" hidden>
+        <h2>Saved</h2>
+        <p>目前沒有已儲存的 Learning Items。</p>
+      </section>
+    </main>
+    <p id="live-status" class="visually-hidden" role="status" aria-live="polite"></p>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

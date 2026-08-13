@@ -2,6 +2,7 @@ import type { ProviderUsage } from '../openai/budget-ledger';
 import type {
   AssistanceFailureKind,
 } from '../openai/quick-hint-executor';
+import type { DeepDiveState } from './deep-dive-state';
 import type { QuickHintResult } from './quick-hint';
 import type { Selection } from './selection';
 
@@ -22,12 +23,29 @@ export type QuickHintRequest = {
 export type CancelQuickHintRequest = {
   type: 'cancel-quick-hint';
 };
+export type StartDeepDiveRequest = {
+  type: 'start-deep-dive';
+  selection: Selection;
+};
+export type GetDeepDiveStateRequest = {
+  type: 'get-deep-dive-state';
+};
+export type RetryDeepDiveRequest = {
+  type: 'retry-deep-dive';
+};
+export type CancelDeepDiveRequest = {
+  type: 'cancel-deep-dive';
+};
 
 export type ReadingFlowRequest =
   | EnableSiteRequest
   | SiteStatusRequest
   | QuickHintRequest
-  | CancelQuickHintRequest;
+  | CancelQuickHintRequest
+  | StartDeepDiveRequest
+  | GetDeepDiveStateRequest
+  | RetryDeepDiveRequest
+  | CancelDeepDiveRequest;
 
 export type EnableSiteResponse = {
   enabled: boolean;
@@ -52,4 +70,18 @@ export type QuickHintResponse =
       kind?: AssistanceFailureKind;
       retryable?: boolean;
       attempts?: number;
+    };
+
+export type DeepDiveResponse =
+  | {
+      status: 'started';
+      requestId: string;
+    }
+  | {
+      status: 'loaded';
+      state: DeepDiveState;
+    }
+  | {
+      status: 'failed' | 'cancelled';
+      message: string;
     };
