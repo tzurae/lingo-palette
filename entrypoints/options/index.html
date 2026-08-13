@@ -8,6 +8,90 @@
   <body>
     <main>
       <h1>Lingo Palette 設定</h1>
+      <section aria-labelledby="openai-title">
+        <h2 id="openai-title">OpenAI assistance</h2>
+        <p>
+          設定只會在你明確儲存後啟用。API key 只存於此擴充功能的裝置本機儲存空間，不會同步或匯出。
+        </p>
+        <p class="warning">
+          瀏覽器、裝置、Chrome profile 或擴充功能套件的控制者仍可擷取 API key，並可能造成未授權的 OpenAI 費用。若懷疑外洩，請立即在 OpenAI 撤銷並輪替 key。
+        </p>
+        <form id="openai-form">
+          <div class="field">
+            <label for="openai-api-key">OpenAI API key</label>
+            <input
+              id="openai-api-key"
+              name="openai-api-key"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <label class="inline-control" for="show-openai-api-key">
+              <input id="show-openai-api-key" type="checkbox" />
+              顯示 API key
+            </label>
+            <button id="remove-openai-api-key" type="button">
+              移除已儲存的 API key
+            </button>
+          </div>
+
+          <div class="field">
+            <label for="openai-model">OpenAI 模型</label>
+            <select id="openai-model" name="openai-model"></select>
+          </div>
+
+          <div class="field" id="custom-model-field" hidden>
+            <label for="custom-openai-model">Custom OpenAI model ID</label>
+            <input
+              id="custom-openai-model"
+              name="custom-openai-model"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <p>model ID 會完全照輸入值送出，不會改寫或 fallback。</p>
+          </div>
+
+          <fieldset>
+            <legend>Workload-specific reasoning effort</legend>
+            <div class="field">
+              <label for="quick-hint-effort">Quick Hint effort</label>
+              <select id="quick-hint-effort"></select>
+            </div>
+            <div class="field">
+              <label for="deep-dive-effort">Deep Dive effort</label>
+              <select id="deep-dive-effort"></select>
+            </div>
+            <div class="field">
+              <label for="review-effort"
+                >Review Generation 與 evaluation effort</label
+              >
+              <select id="review-effort"></select>
+            </div>
+          </fieldset>
+
+          <div class="field">
+            <label for="personal-instructions">Personal Instructions</label>
+            <textarea
+              id="personal-instructions"
+              rows="6"
+              aria-describedby="personal-instructions-help personal-instructions-count"
+            ></textarea>
+            <p id="personal-instructions-help">
+              最多
+              <span id="personal-instructions-limit"></span> 個 Unicode code
+              points；只會在 Quick Hint 與 Deep Dive 的固定目的和 schema
+              之下生效。
+            </p>
+            <p id="personal-instructions-count"></p>
+          </div>
+
+          <button id="activate-openai" type="submit">儲存並啟用</button>
+        </form>
+        <p id="active-openai-configuration"></p>
+        <ul id="openai-probe-usage" aria-label="Capability probe usage"></ul>
+        <p id="openai-status" role="status" aria-live="polite"></p>
+      </section>
       <section aria-labelledby="sites-title">
         <h2 id="sites-title">已啟用的網站</h2>
         <p>只有你個別啟用的網站可以顯示選取工具。</p>

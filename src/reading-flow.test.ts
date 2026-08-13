@@ -8,6 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chromium } from 'playwright-core';
 import type { BrowserContext, Frame, Page, Worker } from 'playwright-core';
 import { scriptIdFor } from './modules/reading-flow/site-permission';
+import {
+  DEFAULT_OPENAI_CONFIGURATION,
+  OPENAI_API_KEY_STORAGE_KEY,
+  OPENAI_CONFIGURATION_STORAGE_KEY,
+} from './modules/openai/configuration-store';
 
 declare const chrome: typeof browser;
 
@@ -94,24 +99,41 @@ beforeAll(async () => {
   worker =
     context.serviceWorkers()[0] ??
     (await context.waitForEvent('serviceworker'));
-  await worker.evaluate(async ([siteOrigin, scriptId]) => {
-    await chrome.scripting.registerContentScripts([
-      {
-        id: scriptId,
-        js: ['/reading-flow.js'],
-        matches: [`${siteOrigin}/*`],
-        allFrames: true,
-        matchOriginAsFallback: true,
-        persistAcrossSessions: true,
-      },
-    ]);
-    await chrome.storage.local.set({
-      quickHintTestFixture: {
-        simplerExpression: 'delay until a later time',
-        explanationCue: '延後原本安排的事情',
-      },
-    });
-  }, [origin, scriptIdFor(origin)] as const);
+  await worker.evaluate(
+    async ([
+      siteOrigin,
+      scriptId,
+      configurationKey,
+      apiKeyKey,
+      defaultConfiguration,
+    ]) => {
+      await chrome.scripting.registerContentScripts([
+        {
+          id: scriptId,
+          js: ['/reading-flow.js'],
+          matches: [`${siteOrigin}/*`],
+          allFrames: true,
+          matchOriginAsFallback: true,
+          persistAcrossSessions: true,
+        },
+      ]);
+      await chrome.storage.local.set({
+        quickHintTestFixture: {
+          simplerExpression: 'delay until a later time',
+          explanationCue: '延後原本安排的事情',
+        },
+        [apiKeyKey]: 'sk-browser-test',
+        [configurationKey]: defaultConfiguration,
+      });
+    },
+    [
+      origin,
+      scriptIdFor(origin),
+      OPENAI_CONFIGURATION_STORAGE_KEY,
+      OPENAI_API_KEY_STORAGE_KEY,
+      DEFAULT_OPENAI_CONFIGURATION,
+    ] as const,
+  );
   page = await context.newPage();
   await page.goto(origin);
 }, 60_000);
@@ -134,6 +156,28 @@ describe('unpacked extension Reading Flow', () => {
     expect(access.granted).toBe(true);
     expect(access.manifest.host_permissions).not.toContain('http://*/*');
     expect(access.manifest.host_permissions).not.toContain('https://*/*');
+    const readingTabId = await activeReadingTabId();
+    const contentScriptRead = await worker.evaluate(
+      async ([tabId, apiKeyStorageKey]) => {
+        const [injection] = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: async (key) => {
+            try {
+              return await chrome.storage.local.get(key);
+            } catch (error) {
+              return {
+                error:
+                  error instanceof Error ? error.message : String(error),
+              };
+            }
+          },
+          args: [apiKeyStorageKey],
+        });
+        return injection?.result;
+      },
+      [readingTabId, OPENAI_API_KEY_STORAGE_KEY] as const,
+    );
+    expect(JSON.stringify(contentScriptRead)).not.toContain('sk-browser-test');
 
 
     const selectionAt = await selectTextByPointer(page, '#copy', 'postpone');
@@ -327,6 +371,254 @@ describe('unpacked extension Reading Flow', () => {
       )
       .toBe(true);
     await settings.close();
+  });
+
+  it('configures a masked local key, exact model, workload efforts, and bounded Personal Instructions', async () => {
+    const settings = await context.newPage();
+    await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
+    const apiKey = settings.getByLabel('OpenAI API key');
+    const model = settings.getByLabel('OpenAI 模型');
+    const quickHintEffort = settings.getByLabel('Quick Hint effort');
+    const deepDiveEffort = settings.getByLabel('Deep Dive effort');
+    const reviewEffort = settings.getByLabel('Review Generation 與 evaluation effort');
+    const personalInstructions = settings.getByLabel('Personal Instructions');
+
+    await expect.poll(() => apiKey.getAttribute('type')).toBe('password');
+    await expect.poll(() => apiKey.inputValue()).toBe('');
+    await expect
+      .poll(() => apiKey.getAttribute('placeholder'))
+      .toBe('已在此裝置儲存');
+    await expect
+      .poll(() =>
+        settings
+          .getByText(/瀏覽器、裝置、Chrome profile 或擴充功能套件的控制者仍可擷取/)
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() => settings.getByText(/未授權的 OpenAI 費用/).isVisible())
+      .toBe(true);
+    await expect.poll(() => model.inputValue()).toBe(
+      'gpt-5.4-mini-2026-03-17',
+    );
+    await expect.poll(() => quickHintEffort.inputValue()).toBe('low');
+    await expect.poll(() => deepDiveEffort.inputValue()).toBe('medium');
+    await expect.poll(() => reviewEffort.inputValue()).toBe('medium');
+
+    await apiKey.fill('sk-replacement-device-key');
+    await expect.poll(() => apiKey.getAttribute('type')).toBe('password');
+    await settings.getByLabel('顯示 API key').check();
+    await expect.poll(() => apiKey.getAttribute('type')).toBe('text');
+    await settings.getByLabel('顯示 API key').uncheck();
+    await quickHintEffort.selectOption('high');
+    await reviewEffort.selectOption('xhigh');
+    await model.selectOption('gpt-5.4-nano-2026-03-17');
+    await expect.poll(() => quickHintEffort.inputValue()).toBe('high');
+    await expect.poll(() => deepDiveEffort.inputValue()).toBe('medium');
+    await expect.poll(() => reviewEffort.inputValue()).toBe('xhigh');
+    await settings.getByRole('button', { name: '儲存並啟用' }).click();
+    await expect
+      .poll(() => settings.locator('#openai-status').textContent())
+      .toContain('已啟用 gpt-5.4-nano-2026-03-17');
+
+    await settings.reload();
+    await expect.poll(() => model.inputValue()).toBe(
+      'gpt-5.4-nano-2026-03-17',
+    );
+    await expect.poll(() => apiKey.inputValue()).toBe('');
+    await expect.poll(() => apiKey.getAttribute('type')).toBe('password');
+    await expect
+      .poll(() => apiKey.getAttribute('placeholder'))
+      .toBe('已在此裝置儲存');
+
+    await model.selectOption('custom');
+    await settings
+      .getByLabel('Custom OpenAI model ID')
+      .fill('ft:gpt-5.4-mini:team:Reading-Exact');
+    await quickHintEffort.selectOption('minimal');
+    await deepDiveEffort.selectOption('high');
+    await reviewEffort.selectOption('max');
+    await personalInstructions.fill('Keep Traditional Chinese cues concise.');
+    await settings.getByRole('button', { name: '測試並啟用' }).click();
+    await expect
+      .poll(() => settings.locator('#openai-status').textContent())
+      .toContain('全部 3 個 capability probes 通過');
+    await expect
+      .poll(() => settings.getByText(/minimal：input 11、output 7、total 18/).isVisible())
+      .toBe(true);
+    await expect
+      .poll(() => settings.getByText(/high：input 11、output 7、total 18/).isVisible())
+      .toBe(true);
+    await expect
+      .poll(() => settings.getByText(/max：input 11、output 7、total 18/).isVisible())
+      .toBe(true);
+
+    const activated = await worker.evaluate(
+      async ([configurationKey, apiKeyKey]) =>
+        chrome.storage.local.get([configurationKey, apiKeyKey]),
+      [OPENAI_CONFIGURATION_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY] as const,
+    );
+    expect(activated).toEqual({
+      [OPENAI_CONFIGURATION_STORAGE_KEY]: {
+        model: {
+          kind: 'custom',
+          id: 'ft:gpt-5.4-mini:team:Reading-Exact',
+        },
+        efforts: {
+          quickHint: 'minimal',
+          deepDive: 'high',
+          review: 'max',
+        },
+        personalInstructions: 'Keep Traditional Chinese cues concise.',
+      },
+      [OPENAI_API_KEY_STORAGE_KEY]: 'sk-replacement-device-key',
+    });
+
+    await settings.close();
+  });
+
+  it('rejects over-limit instructions and preserves the active configuration when a custom probe fails', async () => {
+    const settings = await context.newPage();
+    await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
+    const personalInstructions = settings.getByLabel('Personal Instructions');
+    await personalInstructions.fill('😀'.repeat(4_001));
+    await expect
+      .poll(() => settings.getByText('4,001 / 4,000').isVisible())
+      .toBe(true);
+    await settings.getByRole('button', { name: '測試並啟用' }).click();
+    await expect
+      .poll(() => settings.locator('#openai-status').textContent())
+      .toContain('4,001');
+
+    await personalInstructions.fill('');
+    await settings
+      .getByLabel('Custom OpenAI model ID')
+      .fill('gpt-incompatible-exact');
+    await worker.evaluate(async () => {
+      await chrome.storage.local.set({
+        openAiTestResponses: [
+          {
+            status: 200,
+            body: {
+              output: [
+                {
+                  type: 'message',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: JSON.stringify({ compatible: true }),
+                    },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 11,
+                output_tokens: 7,
+                total_tokens: 18,
+              },
+            },
+          },
+          {
+            status: 400,
+            body: {
+              error: {
+                code: 'invalid_value',
+                param: 'reasoning.effort',
+                message: 'Unsupported effort',
+              },
+            },
+          },
+        ],
+      });
+    });
+    await settings.getByRole('button', { name: '測試並啟用' }).click();
+    await expect
+      .poll(() => settings.locator('#openai-status').textContent())
+      .toContain('模型 \"gpt-incompatible-exact\" 不支援 effort \"high\"');
+    await expect
+      .poll(() =>
+        settings
+          .getByText(/minimal：input 11、output 7、total 18/)
+          .isVisible(),
+      )
+      .toBe(true);
+
+    const active = await worker.evaluate(
+      async (configurationKey) =>
+        (await chrome.storage.local.get(configurationKey))[configurationKey],
+      OPENAI_CONFIGURATION_STORAGE_KEY,
+    );
+    expect(active).toMatchObject({
+      model: {
+        kind: 'custom',
+        id: 'ft:gpt-5.4-mini:team:Reading-Exact',
+      },
+      personalInstructions: 'Keep Traditional Chinese cues concise.',
+    });
+    await settings.close();
+  });
+
+  it('keeps portable configuration after an offline browser restart while the key remains removable', async () => {
+    const settings = await context.newPage();
+    await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
+    await settings.getByRole('button', { name: '移除已儲存的 API key' }).click();
+    await expect
+      .poll(() => settings.locator('#openai-status').textContent())
+      .toContain('已從此裝置移除 OpenAI API key');
+    await expect
+      .poll(() =>
+        settings
+          .getByRole('button', { name: '移除已儲存的 API key' })
+          .isDisabled(),
+      )
+      .toBe(true);
+    await settings.close();
+
+    await context.close();
+    context = await chromium.launchPersistentContext(profilePath, {
+      headless: false,
+      args: [
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
+    });
+    await context.setOffline(true);
+    worker =
+      context.serviceWorkers()[0] ??
+      (await context.waitForEvent('serviceworker'));
+    const restartedSettings = await context.newPage();
+    await restartedSettings.goto(`${extensionOriginFrom(worker)}/options.html`);
+
+    await expect
+      .poll(() => restartedSettings.getByLabel('OpenAI 模型').inputValue())
+      .toBe('custom');
+    await expect
+      .poll(() =>
+        restartedSettings.getByLabel('Custom OpenAI model ID').inputValue(),
+      )
+      .toBe('ft:gpt-5.4-mini:team:Reading-Exact');
+    await expect
+      .poll(() =>
+        restartedSettings
+          .getByLabel('OpenAI API key')
+          .getAttribute('placeholder'),
+      )
+      .toBe('尚未儲存');
+    const portableState = await worker.evaluate(
+      async ([configurationKey, apiKeyKey]) =>
+        chrome.storage.local.get([configurationKey, apiKeyKey]),
+      [OPENAI_CONFIGURATION_STORAGE_KEY, OPENAI_API_KEY_STORAGE_KEY] as const,
+    );
+    expect(portableState).toEqual({
+      [OPENAI_CONFIGURATION_STORAGE_KEY]: expect.objectContaining({
+        model: {
+          kind: 'custom',
+          id: 'ft:gpt-5.4-mini:team:Reading-Exact',
+        },
+      }),
+    });
   });
 });
 function extensionOriginFrom(extensionWorker: Worker): string {
