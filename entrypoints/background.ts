@@ -63,12 +63,8 @@ const quickHintCacheStorageKey = 'quickHintCacheV1';
 const maximumQuickHintCacheEntries = 100;
 const deepDiveCacheStorageKey = 'deepDiveCacheV1';
 const maximumDeepDiveCacheEntries = 100;
-let quickHintCacheWritePending = Promise.resolve();
-let deepDiveCacheWritePending = Promise.resolve();
-let deepDiveLifecyclePending = Promise.resolve();
 let activeOpenAiProbe: AbortController | null = null;
 let openAiActivationVersion = 0;
-let openAiConfigurationMutationPending = Promise.resolve();
 type QuickHintActivity = {
   controller: AbortController;
   completionClaimed: boolean;
@@ -225,61 +221,27 @@ const deepDiveExecutor = createDeepDiveExecutor({
   random: Math.random,
 });
 
-async function serializeQuickHintCacheWrite(
-  operation: () => Promise<void>,
-): Promise<void> {
-  const previous = quickHintCacheWritePending;
-  const completion = Promise.withResolvers<void>();
-  quickHintCacheWritePending = completion.promise;
-  await previous;
-  try {
-    await operation();
-  } finally {
-    completion.resolve();
-  }
-}
-
-async function serializeDeepDiveCacheWrite(
-  operation: () => Promise<void>,
-): Promise<void> {
-  const previous = deepDiveCacheWritePending;
-  const completion = Promise.withResolvers<void>();
-  deepDiveCacheWritePending = completion.promise;
-  await previous;
-  try {
-    await operation();
-  } finally {
-    completion.resolve();
-  }
-}
-
-async function serializeDeepDiveLifecycle<T>(
+function createSerialExecutor(): <T>(
   operation: () => Promise<T>,
-): Promise<T> {
-  const previous = deepDiveLifecyclePending;
-  const completion = Promise.withResolvers<void>();
-  deepDiveLifecyclePending = completion.promise;
-  await previous;
-  try {
-    return await operation();
-  } finally {
-    completion.resolve();
-  }
+) => Promise<T> {
+  let pending = Promise.resolve();
+  return async <T>(operation: () => Promise<T>): Promise<T> => {
+    const previous = pending;
+    const completion = Promise.withResolvers<void>();
+    pending = completion.promise;
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      completion.resolve();
+    }
+  };
 }
 
-async function serializeOpenAiConfigurationMutation<T>(
-  operation: () => Promise<T>,
-): Promise<T> {
-  const previous = openAiConfigurationMutationPending;
-  const completion = Promise.withResolvers<void>();
-  openAiConfigurationMutationPending = completion.promise;
-  await previous;
-  try {
-    return await operation();
-  } finally {
-    completion.resolve();
-  }
-}
+const serializeQuickHintCacheWrite = createSerialExecutor();
+const serializeDeepDiveCacheWrite = createSerialExecutor();
+const serializeDeepDiveLifecycle = createSerialExecutor();
+const serializeOpenAiConfigurationMutation = createSerialExecutor();
 
 let backgroundInitialization = Promise.resolve();
 

@@ -1,29 +1,15 @@
 import { z } from 'zod';
 import type { ProviderUsage } from '../openai/budget-ledger';
 import { parseDeepDive, type DeepDiveResult } from '../reading-flow/deep-dive';
-import { parseQuickHint, type QuickHintResult } from '../reading-flow/quick-hint';
 import {
-  codePointLength,
-  CONTEXT_LIMIT,
-  SELECTION_LIMIT,
-  type Selection,
-} from '../reading-flow/selection';
+  parseQuickHint,
+  parseQuickHintSelection,
+  type QuickHintResult,
+} from '../reading-flow/quick-hint';
+import type { Selection } from '../reading-flow/selection';
 
 export const LOOKUP_RECORDS_STORAGE_KEY = 'lookupRecordsV1';
 
-const boundedText = (limit: number) =>
-  z.string().refine((value) => codePointLength(value) <= limit);
-const selectionSchema = z
-  .object({
-    text: boundedText(SELECTION_LIMIT).refine((value) => value.length > 0),
-    context: z
-      .object({
-        before: boundedText(CONTEXT_LIMIT),
-        after: boundedText(CONTEXT_LIMIT),
-      })
-      .strict(),
-  })
-  .strict();
 const providerUsageSchema = z
   .object({
     inputTokens: z.number().int().nonnegative(),
@@ -59,7 +45,7 @@ const recordSchema = z
   .object({
     version: z.literal(1),
     id: z.string().min(1),
-    selection: selectionSchema,
+    selection: z.unknown(),
     action: actionSchema,
     completedAt: z.string().datetime(),
     usage: usageSchema,
@@ -145,7 +131,7 @@ export function createLookupRecordStore(
       return parsed.data.records.map(parseLookupRecord);
     } catch (error) {
       throw new Error(
-        'Stored Lookup Records contain an invalid Action result; existing data was not changed.',
+        'Stored Lookup Records contain an invalid Selection or Action result; existing data was not changed.',
         { cause: error },
       );
     }
@@ -213,9 +199,10 @@ function parseLookupRecord(value: unknown): LookupRecord {
           type: 'deep-dive',
           result: parseDeepDive(parsed.action.result),
         };
-  const { sourceUrl, ...required } = parsed;
+  const { sourceUrl, selection, ...required } = parsed;
   return {
     ...required,
+    selection: parseQuickHintSelection(selection),
     action,
     ...(sourceUrl === undefined ? {} : { sourceUrl }),
   };

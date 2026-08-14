@@ -111,7 +111,10 @@ function renderLookupRecord(record: LookupRecord): HTMLElement {
   article.className = 'lookup-record';
   const actionLabel =
     record.action.type === 'quick-hint' ? 'Quick Hint' : 'Deep Dive';
-  const completed = element('time', new Date(record.completedAt).toLocaleString());
+  const completed = element(
+    'time',
+    new Date(record.completedAt).toLocaleString('zh-TW'),
+  );
   completed.dateTime = record.completedAt;
   article.append(
     element('h3', actionLabel),
