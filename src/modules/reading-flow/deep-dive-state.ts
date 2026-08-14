@@ -1,23 +1,10 @@
 import { z } from 'zod';
 import { parseDeepDive, type DeepDiveResult } from './deep-dive';
-import {
-  codePointLength,
-  CONTEXT_LIMIT,
-  SELECTION_LIMIT,
-  type Selection,
-} from './selection';
+import type { Selection } from './selection';
+import { selectionSchema } from './selection-parser';
 
 export const DEEP_DIVE_STATE_STORAGE_KEY = 'deepDiveStateV1';
 
-const boundedText = (limit: number) =>
-  z.string().refine((value) => codePointLength(value) <= limit);
-const selectionSchema = z.object({
-  text: boundedText(SELECTION_LIMIT).refine((value) => value.length > 0),
-  context: z.object({
-    before: boundedText(CONTEXT_LIMIT),
-    after: boundedText(CONTEXT_LIMIT),
-  }),
-});
 const currentSchema = z.object({
   selection: selectionSchema,
   result: z.unknown(),

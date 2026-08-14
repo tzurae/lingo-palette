@@ -1,12 +1,9 @@
 import { z } from 'zod';
 import type { ProviderUsage } from '../openai/budget-ledger';
 import { parseDeepDive, type DeepDiveResult } from '../reading-flow/deep-dive';
-import {
-  parseQuickHint,
-  parseQuickHintSelection,
-  type QuickHintResult,
-} from '../reading-flow/quick-hint';
+import { parseQuickHint, type QuickHintResult } from '../reading-flow/quick-hint';
 import type { Selection } from '../reading-flow/selection';
+import { selectionSchema } from '../reading-flow/selection-parser';
 
 export const LOOKUP_RECORDS_STORAGE_KEY = 'lookupRecordsV1';
 
@@ -45,7 +42,7 @@ const recordSchema = z
   .object({
     version: z.literal(1),
     id: z.string().min(1),
-    selection: z.unknown(),
+    selection: selectionSchema,
     action: actionSchema,
     completedAt: z.string().datetime(),
     usage: usageSchema,
@@ -131,7 +128,7 @@ export function createLookupRecordStore(
       return parsed.data.records.map(parseLookupRecord);
     } catch (error) {
       throw new Error(
-        'Stored Lookup Records contain an invalid Selection or Action result; existing data was not changed.',
+        'Stored Lookup Records contain an invalid Action result; existing data was not changed.',
         { cause: error },
       );
     }
@@ -199,10 +196,9 @@ function parseLookupRecord(value: unknown): LookupRecord {
           type: 'deep-dive',
           result: parseDeepDive(parsed.action.result),
         };
-  const { sourceUrl, selection, ...required } = parsed;
+  const { sourceUrl, ...required } = parsed;
   return {
     ...required,
-    selection: parseQuickHintSelection(selection),
     action,
     ...(sourceUrl === undefined ? {} : { sourceUrl }),
   };

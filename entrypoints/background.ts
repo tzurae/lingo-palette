@@ -35,15 +35,13 @@ import {
 } from '../src/modules/openai/openai-responses';
 import { parseDeepDive } from '../src/modules/reading-flow/deep-dive';
 import { createDeepDiveStateStore } from '../src/modules/reading-flow/deep-dive-state';
-import {
-  parseQuickHint,
-  parseQuickHintSelection,
-} from '../src/modules/reading-flow/quick-hint';
+import { parseQuickHint } from '../src/modules/reading-flow/quick-hint';
 import {
   isSupportedOrigin,
   scriptIdFor,
 } from '../src/modules/reading-flow/site-permission';
 import type { Selection } from '../src/modules/reading-flow/selection';
+import { parseSelection } from '../src/modules/reading-flow/selection-parser';
 import type {
   DeepDiveResponse,
   EnableSiteResponse,
@@ -419,7 +417,7 @@ async function generateQuickHintRequest(
 
   let providerSelection: Selection;
   try {
-    providerSelection = parseQuickHintSelection(selection);
+    providerSelection = parseSelection(selection);
   } catch {
     return {
       status: 'failed',
@@ -523,7 +521,7 @@ async function startDeepDive(
 
   let providerSelection: Selection;
   try {
-    providerSelection = parseQuickHintSelection(selection);
+    providerSelection = parseSelection(selection);
   } catch {
     return {
       status: 'failed',
