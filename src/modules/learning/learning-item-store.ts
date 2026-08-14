@@ -158,13 +158,17 @@ export type EligibleSenseCandidate = {
   morphology: string;
   partOfSpeech: string;
 };
+export type EligibleSenseQuery = {
+  lookupRecordId: string;
+  normalizedExpression: string;
+};
 export type EligibleSenseLookupResult = {
   evidencePackVersion: string;
   candidates: EligibleSenseCandidate[];
 };
 export type EligibleSenseLookup = {
   findEligibleSenses(
-    normalizedExpression: string,
+    query: EligibleSenseQuery,
   ): Promise<EligibleSenseLookupResult | null>;
 };
 export type LearningStorage = {
@@ -282,7 +286,11 @@ export function createLearningItemStore(
         }
 
         const normalizedExpression = normalizeExpression(lookup.selection.text);
-        const sensePin = await resolveSensePin(evidence, normalizedExpression);
+        const sensePin = await resolveSensePin(
+          evidence,
+          lookup.id,
+          normalizedExpression,
+        );
         const timestamp = now();
         const learningItemId = id('learning-item');
         const encounterId = id('encounter');
@@ -585,32 +593,16 @@ export function createLearningItemStore(
         if (mutation === undefined || mutation.undoneAt !== null) {
           throw new Error('Learning mutation 不存在或已經復原。');
         }
-        const affectedEncounterIds =
-          mutation.type === 'keep-separate'
-            ? []
-            : mutation.type === 'encounter-reclassification'
-              ? [mutation.encounterId]
-              : mutation.encounterIds;
-        const hasLaterActiveEncounterMutation = state.history
-          .slice(mutationIndex + 1)
-          .some((candidate) => {
-            if (
-              candidate.undoneAt !== null ||
-              candidate.type === 'keep-separate'
-            ) {
-              return false;
-            }
-            const laterEncounterIds =
-              candidate.type === 'encounter-reclassification'
-                ? [candidate.encounterId]
-                : candidate.encounterIds;
-            return laterEncounterIds.some((encounterId) =>
-              affectedEncounterIds.includes(encounterId),
-            );
-          });
-        if (hasLaterActiveEncounterMutation) {
+        let latestActiveMutationIndex = state.history.length - 1;
+        while (
+          latestActiveMutationIndex >= 0 &&
+          state.history[latestActiveMutationIndex]?.undoneAt !== null
+        ) {
+          latestActiveMutationIndex -= 1;
+        }
+        if (mutationIndex !== latestActiveMutationIndex) {
           throw new Error(
-            'Encounter 有較新的 mutation；必須依反向順序復原。',
+            'Learning mutations 必須依反向順序復原。',
           );
         }
         if (mutation.type === 'keep-separate') {
@@ -770,11 +762,15 @@ export function normalizeExpression(value: string): string {
 
 async function resolveSensePin(
   evidence: EligibleSenseLookup,
+  lookupRecordId: string,
   normalizedExpression: string,
 ): Promise<SensePin | null> {
   let match: EligibleSenseLookupResult | null;
   try {
-    match = await evidence.findEligibleSenses(normalizedExpression);
+    match = await evidence.findEligibleSenses({
+      lookupRecordId,
+      normalizedExpression,
+    });
   } catch {
     return null;
   }

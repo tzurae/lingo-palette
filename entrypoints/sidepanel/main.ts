@@ -35,6 +35,7 @@ const recentPanel = requiredElement<HTMLElement>('#recent-panel');
 const recentContent = requiredElement<HTMLElement>('#recent-content');
 const savedPanel = requiredElement<HTMLElement>('#saved-panel');
 const savedContent = requiredElement<HTMLElement>('#saved-content');
+const savedError = requiredElement<HTMLElement>('#saved-error');
 const liveStatus = requiredElement<HTMLElement>('#live-status');
 let recentRecords: LookupRecord[] = [];
 let learningState: LearningState | null = null;
@@ -214,6 +215,7 @@ function renderRecentError(message: string): void {
 
 
 function renderSaved(state: LearningState): void {
+  clearSavedError();
   const restoreFocus = savedContent.contains(document.activeElement);
   savedContent.replaceChildren(element('h2', 'Saved'));
   const activeItems = state.learningItems.filter(
@@ -425,6 +427,14 @@ function renderLearningHistory(history: LearningMutation[]): HTMLElement {
   const section = element('section');
   section.className = 'learning-history';
   section.append(element('h2', 'Learning history'));
+  let latestActiveMutationId: string | null = null;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const candidate = history[index];
+    if (candidate?.undoneAt === null) {
+      latestActiveMutationId = candidate.id;
+      break;
+    }
+  }
   const list = element('ol');
   for (const mutation of history.toReversed()) {
     const entry = element('li');
@@ -441,7 +451,7 @@ function renderLearningHistory(history: LearningMutation[]): HTMLElement {
           : `已復原：${new Date(mutation.undoneAt).toLocaleString('zh-TW')}`,
       ),
     );
-    if (mutation.undoneAt === null) {
+    if (mutation.id === latestActiveMutationId) {
       const undo = element('button', '復原');
       undo.addEventListener('click', () => {
         void performLearningAction({
@@ -469,6 +479,7 @@ function encounterContext(encounter: Encounter): string {
 }
 
 async function performLearningAction(request: LearningRequest): Promise<void> {
+  clearSavedError();
   announce('正在更新 Saved。');
   try {
     const response = (await browser.runtime.sendMessage(
@@ -487,13 +498,14 @@ async function performLearningAction(request: LearningRequest): Promise<void> {
 }
 
 function renderSavedError(message: string): void {
-  const restoreFocus = savedContent.contains(document.activeElement);
-  savedContent.replaceChildren(
-    element('h2', 'Saved'),
-    element('p', message, 'error'),
-  );
+  savedError.textContent = message;
+  savedError.hidden = false;
   if (!savedPanel.hidden) announce(message);
-  if (restoreFocus) savedPanel.focus({ preventScroll: true });
+}
+
+function clearSavedError(): void {
+  savedError.textContent = '';
+  savedError.hidden = true;
 }
 function renderCurrent(state: DeepDiveState): void {
   const restoreFocus = currentContent.contains(document.activeElement);

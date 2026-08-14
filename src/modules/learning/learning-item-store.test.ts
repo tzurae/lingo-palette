@@ -44,7 +44,7 @@ describe('Learning Item store', () => {
     const store = createLearningItemStore(
       storage,
       {
-        async findEligibleSenses(normalizedExpression) {
+        async findEligibleSenses({ normalizedExpression }) {
           return {
             evidencePackVersion: 'oewn-test-2025.1',
             candidates:
@@ -532,7 +532,7 @@ describe('Learning Item store', () => {
     await store.reclassifyEncounter('encounter-1', 'learning-item-2');
 
     await expect(store.undoMutation(first.id)).rejects.toThrow(
-      '較新的 mutation',
+      '反向順序',
     );
     const state = await store.load();
     expect(
@@ -546,6 +546,65 @@ describe('Learning Item store', () => {
       { id: 'learning-mutation-2', undoneAt: null },
       { id: 'learning-mutation-3', undoneAt: null },
     ]);
+  });
+
+  it('rejects Undo of any older active mutation to preserve reverse-order history', async () => {
+    const storage = memoryStorage();
+    const counters = new Map<string, number>();
+    const store = createLearningItemStore(
+      storage,
+      {
+        async findEligibleSenses() {
+          return {
+            evidencePackVersion: 'oewn-test-2025.1',
+            candidates: [
+              {
+                sourceSenseId: 'uncertain',
+                morphology: 'lemma',
+                partOfSpeech: 'verb',
+              },
+              {
+                sourceSenseId: 'uncertain-2',
+                morphology: 'lemma',
+                partOfSpeech: 'verb',
+              },
+            ],
+          };
+        },
+      },
+      {
+        id(kind) {
+          const next = (counters.get(kind) ?? 0) + 1;
+          counters.set(kind, next);
+          return `${kind}-${next}`;
+        },
+        now: () => '2026-08-14T13:00:00.000Z',
+      },
+    );
+    await store.saveLookup(lookup('lookup-1', 'postpone', '', ''));
+    await store.saveLookup(lookup('lookup-2', 'Postpone', '', ''));
+    await store.saveLookup(lookup('lookup-3', 'adjourn', '', ''));
+    const keepSeparate = await store.resolveMergeSuggestion(
+      'merge-suggestion-1',
+      'keep-separate',
+    );
+    if (keepSeparate.status !== 'kept-separate') {
+      throw new Error('Expected Keep separate resolution.');
+    }
+    await store.reclassifyEncounter('encounter-2', 'learning-item-3');
+
+    await expect(store.undoMutation(keepSeparate.resolutionMutationId)).rejects.toThrow(
+      '反向順序',
+    );
+    await expect(store.load()).resolves.toMatchObject({
+      mergeSuggestions: [
+        { id: 'merge-suggestion-1', status: 'kept-separate' },
+      ],
+      history: [
+        { id: 'learning-mutation-1', undoneAt: null },
+        { id: 'learning-mutation-2', undoneAt: null },
+      ],
+    });
   });
   it('keeps Productive-use Intent per Item, defaulting off without creating schedule state', async () => {
     const storage = memoryStorage();

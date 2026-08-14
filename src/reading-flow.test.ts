@@ -1558,6 +1558,32 @@ describe('unpacked extension Reading Flow', () => {
                 sourceSenseId: 'oewn:08420278-n',
               },
             ],
+            occurrenceAnalyses: [
+              {
+                lookupRecordId: 'lookup-postponed-1',
+                normalizedExpression: 'postponed',
+                morphology: 'past-tense-of:postpone',
+                partOfSpeech: 'verb',
+              },
+              {
+                lookupRecordId: 'lookup-postponed-2',
+                normalizedExpression: 'postponed',
+                morphology: 'past-tense-of:postpone',
+                partOfSpeech: 'verb',
+              },
+              {
+                lookupRecordId: 'lookup-bank-1',
+                normalizedExpression: 'bank',
+                morphology: 'lemma',
+                partOfSpeech: 'noun',
+              },
+              {
+                lookupRecordId: 'lookup-bank-2',
+                normalizedExpression: 'bank',
+                morphology: 'lemma',
+                partOfSpeech: 'noun',
+              },
+            ],
           },
         });
       },
@@ -1636,6 +1662,57 @@ describe('unpacked extension Reading Flow', () => {
     await suggestion.getByRole('button', { name: '保持分開' }).click();
     await expect
       .poll(() => savedPanel.getByText('已選擇保持分開').isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        savedPanel.getByRole('button', { name: '復原' }).count(),
+      )
+      .toBe(1);
+    const latestMutation = savedPanel
+      .locator('.learning-mutation')
+      .filter({ hasText: '保持分開' });
+    const mutationIdText = await latestMutation
+      .locator('p')
+      .filter({ hasText: 'Mutation ID' })
+      .textContent();
+    const mutationId = mutationIdText?.replace('Mutation ID: ', '');
+    if (mutationId === undefined) throw new Error('Expected mutation ID.');
+    const latestUndo = latestMutation.getByRole('button', { name: '復原' });
+    await latestUndo.evaluate(
+      async (button: HTMLButtonElement, staleMutationId) => {
+        button.focus();
+        await chrome.runtime.sendMessage({
+          type: 'undo-learning-mutation',
+          mutationId: staleMutationId,
+        });
+        if (button.isConnected) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          const observer = new MutationObserver(() => {
+            if (button.isConnected) return;
+            observer.disconnect();
+            resolve();
+          });
+          observer.observe(document, { childList: true, subtree: true });
+          await promise;
+        }
+        button.click();
+      },
+      mutationId,
+    );
+    await expect
+      .poll(() => savedPanel.locator('#saved-error').isVisible())
+      .toBe(true);
+    await expect
+      .poll(() => savedPanel.getByText('They postponed the vote.').isVisible())
+      .toBe(true);
+    suggestion = savedPanel
+      .locator('.merge-suggestion')
+      .filter({ hasText: 'They sat on the river bank at sunset.' })
+      .filter({ hasText: 'She visited the Bank for a loan.' });
+    await expect.poll(() => suggestion.isVisible()).toBe(true);
+    await suggestion.getByRole('button', { name: '保持分開' }).click();
+    await expect
+      .poll(() => savedPanel.locator('#saved-error').isHidden())
       .toBe(true);
 
     const productiveIntent = postponedItem.getByRole('checkbox', {
