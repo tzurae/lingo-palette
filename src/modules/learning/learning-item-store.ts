@@ -96,7 +96,7 @@ const mergeMutationSchema = z
     sourceLearningItemId: z.string().min(1),
     targetLearningItemId: z.string().min(1),
     encounterIds: z.array(z.string().min(1)).min(1),
-    targetEncounterIds: z.array(z.string().min(1)).min(1),
+    targetEncounterIds: z.array(z.string().min(1)),
     createdAt: z.string().datetime(),
     undoneAt: z.string().datetime().nullable(),
   })

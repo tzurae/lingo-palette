@@ -149,6 +149,61 @@ describe('Learning Item store', () => {
   });
 
 
+  it('auto-merges into an active Item whose Encounters were reclassified away', async () => {
+    const storage = memoryStorage();
+    const counters = new Map<string, number>();
+    const store = createLearningItemStore(
+      storage,
+      {
+        async findEligibleSenses({ normalizedExpression }) {
+          return {
+            evidencePackVersion: 'oewn-test-2025.1',
+            candidates: [
+              {
+                sourceSenseId: `sense:${normalizedExpression}`,
+                morphology: 'lemma',
+                partOfSpeech: 'noun',
+              },
+            ],
+          };
+        },
+      },
+      {
+        id(kind) {
+          const next = (counters.get(kind) ?? 0) + 1;
+          counters.set(kind, next);
+          return `${kind}-${next}`;
+        },
+        now: () => '2026-08-14T13:00:00.000Z',
+      },
+    );
+    await store.saveLookup(lookup('lookup-1', 'alpha', '', ''));
+    await store.saveLookup(lookup('lookup-2', 'beta', '', ''));
+    await store.saveLookup(lookup('lookup-3', 'gamma', '', ''));
+    await store.reclassifyEncounter('encounter-2', 'learning-item-3');
+
+    await expect(
+      store.saveLookup(lookup('lookup-4', 'Beta', '', '')),
+    ).resolves.toMatchObject({
+      outcome: 'auto-merged',
+      learningItemId: 'learning-item-2',
+      encounterId: 'encounter-4',
+    });
+    const state = await store.load();
+    expect(
+      state.encounters.find((encounter) => encounter.id === 'encounter-4'),
+    ).toMatchObject({
+      id: 'encounter-4',
+      learningItemId: 'learning-item-2',
+    });
+    expect(
+      state.history.find((mutation) => mutation.id === 'learning-mutation-2'),
+    ).toMatchObject({
+      type: 'auto-merge',
+      targetEncounterIds: [],
+    });
+  });
+
   it('leaves multiple eligible morphology and part-of-speech tuples unpinned even when they share a sense ID', async () => {
     const store = createLearningItemStore(
       memoryStorage(),
