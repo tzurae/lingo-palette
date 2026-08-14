@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { EvidenceLookup } from './learning-item-store';
+import type { EligibleSenseLookup } from './learning-item-store';
 
 export const ACTIVE_EVIDENCE_INDEX_STORAGE_KEY = 'activeEvidenceIndexV1';
 
@@ -23,11 +23,11 @@ export type EvidenceIndexStorage = {
   get(key: string): Promise<Record<string, unknown>>;
 };
 
-export function createStoredEvidenceLookup(
+export function createStoredEligibleSenseLookup(
   storage: EvidenceIndexStorage,
-): EvidenceLookup {
+): EligibleSenseLookup {
   return {
-    async lookup(normalizedExpression) {
+    async findEligibleSenses(normalizedExpression) {
       const stored = await storage.get(ACTIVE_EVIDENCE_INDEX_STORAGE_KEY);
       const parsed = activeEvidenceIndexSchema.safeParse(
         stored[ACTIVE_EVIDENCE_INDEX_STORAGE_KEY],

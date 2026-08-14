@@ -6,7 +6,7 @@ import {
   createLookupRecordStore,
   sanitizeSourceUrl,
 } from '../src/modules/learning/lookup-record';
-import { createStoredEvidenceLookup } from '../src/modules/learning/evidence-pack-lookup';
+import { createStoredEligibleSenseLookup } from '../src/modules/learning/evidence-pack-lookup';
 import { createLearningItemStore } from '../src/modules/learning/learning-item-store';
 import type {
   LearningRequest,
@@ -65,7 +65,7 @@ const budgetLedger = createBudgetLedger(browser.storage.local);
 const lookupRecordStore = createLookupRecordStore(browser.storage.local);
 const learningItemStore = createLearningItemStore(
   browser.storage.local,
-  createStoredEvidenceLookup(browser.storage.local),
+  createStoredEligibleSenseLookup(browser.storage.local),
 );
 const quickHintCacheStorageKey = 'quickHintCacheV1';
 const maximumQuickHintCacheEntries = 100;

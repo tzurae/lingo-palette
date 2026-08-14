@@ -76,9 +76,17 @@ const resolvedSuggestionSchema = z
     resolutionMutationId: z.string().min(1),
   })
   .strict();
+const supersededSuggestionSchema = z
+  .object({
+    ...mergeSuggestionBase,
+    status: z.literal('superseded'),
+    supersededByMutationId: z.string().min(1),
+  })
+  .strict();
 const mergeSuggestionSchema = z.discriminatedUnion('status', [
   pendingMergeSuggestionSchema,
   resolvedSuggestionSchema,
+  supersededSuggestionSchema,
 ]);
 const mergeMutationSchema = z
   .object({
@@ -112,6 +120,7 @@ const encounterReclassificationSchema = z
     encounterId: z.string().min(1),
     sourceLearningItemId: z.string().min(1),
     targetLearningItemId: z.string().min(1),
+    supersededSuggestionIds: z.array(z.string().min(1)),
     createdAt: z.string().datetime(),
     undoneAt: z.string().datetime().nullable(),
   })
@@ -144,17 +153,19 @@ export type LearningState = {
   mergeSuggestions: MergeSuggestion[];
   history: LearningMutation[];
 };
-export type EvidenceCandidate = {
+export type EligibleSenseCandidate = {
   sourceSenseId: string;
   morphology: string;
   partOfSpeech: string;
 };
-export type EvidenceLookupResult = {
+export type EligibleSenseLookupResult = {
   evidencePackVersion: string;
-  candidates: EvidenceCandidate[];
+  candidates: EligibleSenseCandidate[];
 };
-export type EvidenceLookup = {
-  lookup(normalizedExpression: string): Promise<EvidenceLookupResult | null>;
+export type EligibleSenseLookup = {
+  findEligibleSenses(
+    normalizedExpression: string,
+  ): Promise<EligibleSenseLookupResult | null>;
 };
 export type LearningStorage = {
   get(key: string): Promise<Record<string, unknown>>;
@@ -180,7 +191,7 @@ const emptyState = (): LearningState => ({
 
 export function createLearningItemStore(
   storage: LearningStorage,
-  evidence: EvidenceLookup,
+  evidence: EligibleSenseLookup,
   dependencies: {
     id?: (kind: LearningRecordKind) => string;
     now?: () => string;
@@ -516,6 +527,20 @@ export function createLearningItemStore(
         if (source?.status !== 'active' || target?.status !== 'active') {
           throw new Error('Encounter 只能在 active Learning Items 之間 reclassify。');
         }
+        const sourceWillBeEmpty =
+          state.encounters.filter(
+            (candidate) => candidate.learningItemId === source.id,
+          ).length === 1;
+        const supersededSuggestionIds = sourceWillBeEmpty
+          ? state.mergeSuggestions
+              .filter(
+                (suggestion) =>
+                  suggestion.status === 'pending' &&
+                  (suggestion.sourceLearningItemId === source.id ||
+                    suggestion.targetLearningItemId === source.id),
+              )
+              .map((suggestion) => suggestion.id)
+          : [];
         const mutation: LearningMutation = {
           version: 1,
           id: id('learning-mutation'),
@@ -523,6 +548,7 @@ export function createLearningItemStore(
           encounterId: encounter.id,
           sourceLearningItemId: source.id,
           targetLearningItemId: target.id,
+          supersededSuggestionIds,
           createdAt: now(),
           undoneAt: null,
         };
@@ -533,6 +559,16 @@ export function createLearningItemStore(
               ? { ...candidate, learningItemId: target.id }
               : candidate,
           ),
+          mergeSuggestions: state.mergeSuggestions.map((suggestion) =>
+            supersededSuggestionIds.includes(suggestion.id) &&
+            suggestion.status === 'pending'
+              ? {
+                  ...suggestion,
+                  status: 'superseded',
+                  supersededByMutationId: mutation.id,
+                }
+              : suggestion,
+          ),
           history: [...state.history, mutation],
         });
         return mutation;
@@ -542,11 +578,40 @@ export function createLearningItemStore(
     undoMutation(mutationId) {
       return serialized(async () => {
         const state = await loadUnsafe();
-        const mutation = state.history.find(
+        const mutationIndex = state.history.findIndex(
           (candidate) => candidate.id === mutationId,
         );
+        const mutation = state.history[mutationIndex];
         if (mutation === undefined || mutation.undoneAt !== null) {
           throw new Error('Learning mutation 不存在或已經復原。');
+        }
+        const affectedEncounterIds =
+          mutation.type === 'keep-separate'
+            ? []
+            : mutation.type === 'encounter-reclassification'
+              ? [mutation.encounterId]
+              : mutation.encounterIds;
+        const hasLaterActiveEncounterMutation = state.history
+          .slice(mutationIndex + 1)
+          .some((candidate) => {
+            if (
+              candidate.undoneAt !== null ||
+              candidate.type === 'keep-separate'
+            ) {
+              return false;
+            }
+            const laterEncounterIds =
+              candidate.type === 'encounter-reclassification'
+                ? [candidate.encounterId]
+                : candidate.encounterIds;
+            return laterEncounterIds.some((encounterId) =>
+              affectedEncounterIds.includes(encounterId),
+            );
+          });
+        if (hasLaterActiveEncounterMutation) {
+          throw new Error(
+            'Encounter 有較新的 mutation；必須依反向順序復原。',
+          );
         }
         if (mutation.type === 'keep-separate') {
           const suggestion = state.mergeSuggestions.find(
@@ -610,6 +675,21 @@ export function createLearningItemStore(
               candidate.id === encounter.id
                 ? { ...candidate, learningItemId: source.id }
                 : candidate,
+            ),
+            mergeSuggestions: state.mergeSuggestions.map((suggestion) =>
+              mutation.supersededSuggestionIds.includes(suggestion.id) &&
+              suggestion.status === 'superseded' &&
+              suggestion.supersededByMutationId === mutation.id
+                ? {
+                    version: suggestion.version,
+                    id: suggestion.id,
+                    sourceLearningItemId: suggestion.sourceLearningItemId,
+                    targetLearningItemId: suggestion.targetLearningItemId,
+                    reason: suggestion.reason,
+                    createdAt: suggestion.createdAt,
+                    status: 'pending',
+                  }
+                : suggestion,
             ),
             history: state.history.map((candidate) =>
               candidate.id === undone.id ? undone : candidate,
@@ -689,30 +769,26 @@ export function normalizeExpression(value: string): string {
 }
 
 async function resolveSensePin(
-  evidence: EvidenceLookup,
+  evidence: EligibleSenseLookup,
   normalizedExpression: string,
 ): Promise<SensePin | null> {
-  let match: EvidenceLookupResult | null;
+  let match: EligibleSenseLookupResult | null;
   try {
-    match = await evidence.lookup(normalizedExpression);
+    match = await evidence.findEligibleSenses(normalizedExpression);
   } catch {
     return null;
   }
   if (match === null || match.evidencePackVersion.length === 0) return null;
-  const candidatesBySense = new Map<string, EvidenceCandidate>();
-  for (const candidate of match.candidates) {
-    if (
-      candidate.sourceSenseId.length === 0 ||
-      candidate.morphology.length === 0 ||
-      candidate.partOfSpeech.length === 0
-    ) {
-      continue;
-    }
-    candidatesBySense.set(candidate.sourceSenseId, candidate);
+  if (match.candidates.length !== 1) return null;
+  const candidate = match.candidates[0];
+  if (
+    candidate === undefined ||
+    candidate.sourceSenseId.length === 0 ||
+    candidate.morphology.length === 0 ||
+    candidate.partOfSpeech.length === 0
+  ) {
+    return null;
   }
-  if (candidatesBySense.size !== 1) return null;
-  const candidate = candidatesBySense.values().next().value;
-  if (candidate === undefined) return null;
   return {
     evidencePackVersion: match.evidencePackVersion,
     sourceSenseId: candidate.sourceSenseId,

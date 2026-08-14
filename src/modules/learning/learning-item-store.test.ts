@@ -44,7 +44,7 @@ describe('Learning Item store', () => {
     const store = createLearningItemStore(
       storage,
       {
-        async lookup(normalizedExpression) {
+        async findEligibleSenses(normalizedExpression) {
           return {
             evidencePackVersion: 'oewn-test-2025.1',
             candidates:
@@ -141,20 +141,57 @@ describe('Learning Item store', () => {
     ]);
 
     const reloaded = createLearningItemStore(storage, {
-      async lookup() {
+      async findEligibleSenses() {
         return null;
       },
     });
     await expect(reloaded.load()).resolves.toEqual(state);
   });
 
+
+  it('leaves multiple eligible morphology and part-of-speech tuples unpinned even when they share a sense ID', async () => {
+    const store = createLearningItemStore(
+      memoryStorage(),
+      {
+        async findEligibleSenses() {
+          return {
+            evidencePackVersion: 'oewn-test-2025.1',
+            candidates: [
+              {
+                sourceSenseId: 'oewn:02642814-v',
+                morphology: 'past-tense-of:postpone',
+                partOfSpeech: 'verb',
+              },
+              {
+                sourceSenseId: 'oewn:02642814-v',
+                morphology: 'participial-adjective-of:postpone',
+                partOfSpeech: 'adjective',
+              },
+            ],
+          };
+        },
+      },
+      {
+        id: (kind) => `${kind}-1`,
+        now: () => '2026-08-14T13:00:00.000Z',
+      },
+    );
+
+    await store.saveLookup(
+      lookup('lookup-1', 'postponed', 'The meeting was ', ' again.'),
+    );
+    await expect(store.load()).resolves.toMatchObject({
+      learningItems: [{ sensePin: null }],
+      encounters: [{ sensePin: null }],
+    });
+  });
   it('keeps uncertain senses separate and creates a non-destructive Merge Suggestion', async () => {
     const storage = memoryStorage();
     const counters = new Map<string, number>();
     const store = createLearningItemStore(
       storage,
       {
-        async lookup() {
+        async findEligibleSenses() {
           return {
             evidencePackVersion: 'oewn-test-2025.1',
             candidates: [
@@ -220,7 +257,7 @@ describe('Learning Item store', () => {
     const counters = new Map<string, number>();
     const store = createLearningItemStore(
       storage,
-      { async lookup() { return null; } },
+      { async findEligibleSenses() { return null; } },
       {
         id(kind) {
           const next = (counters.get(kind) ?? 0) + 1;
@@ -301,7 +338,7 @@ describe('Learning Item store', () => {
     const counters = new Map<string, number>();
     const store = createLearningItemStore(
       storage,
-      { async lookup() { return null; } },
+      { async findEligibleSenses() { return null; } },
       {
         id(kind) {
           const next = (counters.get(kind) ?? 0) + 1;
@@ -359,7 +396,7 @@ describe('Learning Item store', () => {
     const counters = new Map<string, number>();
     const store = createLearningItemStore(
       storage,
-      { async lookup() { return null; } },
+      { async findEligibleSenses() { return null; } },
       {
         id(kind) {
           const next = (counters.get(kind) ?? 0) + 1;
@@ -422,11 +459,99 @@ describe('Learning Item store', () => {
     ]);
   });
 
+
+  it('supersedes a pending suggestion when reclassification removes its source context and restores it on Undo', async () => {
+    const storage = memoryStorage();
+    const counters = new Map<string, number>();
+    const store = createLearningItemStore(
+      storage,
+      { async findEligibleSenses() { return null; } },
+      {
+        id(kind) {
+          const next = (counters.get(kind) ?? 0) + 1;
+          counters.set(kind, next);
+          return `${kind}-${next}`;
+        },
+        now: () => '2026-08-14T13:00:00.000Z',
+      },
+    );
+    await store.saveLookup(
+      lookup('lookup-1', 'bank', 'river ', ' at sunset'),
+    );
+    await store.saveLookup(
+      lookup('lookup-2', 'Bank', 'the ', ' approved a loan'),
+    );
+    await store.saveLookup(
+      lookup('lookup-3', 'adjourn', 'They ', ' the meeting'),
+    );
+
+    const mutation = await store.reclassifyEncounter(
+      'encounter-2',
+      'learning-item-3',
+    );
+    let state = await store.load();
+    expect(state.mergeSuggestions).toMatchObject([
+      {
+        id: 'merge-suggestion-1',
+        status: 'superseded',
+        supersededByMutationId: mutation.id,
+      },
+    ]);
+
+    await store.undoMutation(mutation.id);
+    state = await store.load();
+    expect(state.mergeSuggestions).toMatchObject([
+      { id: 'merge-suggestion-1', status: 'pending' },
+    ]);
+  });
+
+  it('rejects non-LIFO Undo when a later active mutation touched the same Encounter', async () => {
+    const storage = memoryStorage();
+    const counters = new Map<string, number>();
+    const store = createLearningItemStore(
+      storage,
+      { async findEligibleSenses() { return null; } },
+      {
+        id(kind) {
+          const next = (counters.get(kind) ?? 0) + 1;
+          counters.set(kind, next);
+          return `${kind}-${next}`;
+        },
+        now: () => '2026-08-14T13:00:00.000Z',
+      },
+    );
+    await store.saveLookup(lookup('lookup-1', 'alpha', '', ''));
+    await store.saveLookup(lookup('lookup-2', 'beta', '', ''));
+    await store.saveLookup(lookup('lookup-3', 'gamma', '', ''));
+
+    const first = await store.reclassifyEncounter(
+      'encounter-1',
+      'learning-item-2',
+    );
+    await store.reclassifyEncounter('encounter-1', 'learning-item-3');
+    await store.reclassifyEncounter('encounter-1', 'learning-item-2');
+
+    await expect(store.undoMutation(first.id)).rejects.toThrow(
+      '較新的 mutation',
+    );
+    const state = await store.load();
+    expect(
+      state.encounters.find((encounter) => encounter.id === 'encounter-1'),
+    ).toMatchObject({
+      id: 'encounter-1',
+      learningItemId: 'learning-item-2',
+    });
+    expect(state.history).toMatchObject([
+      { id: first.id, undoneAt: null },
+      { id: 'learning-mutation-2', undoneAt: null },
+      { id: 'learning-mutation-3', undoneAt: null },
+    ]);
+  });
   it('keeps Productive-use Intent per Item, defaulting off without creating schedule state', async () => {
     const storage = memoryStorage();
     const store = createLearningItemStore(
       storage,
-      { async lookup() { return null; } },
+      { async findEligibleSenses() { return null; } },
       {
         id: (kind) => `${kind}-1`,
         now: () => '2026-08-14T13:00:00.000Z',
