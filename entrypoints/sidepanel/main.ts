@@ -254,7 +254,7 @@ function renderSaved(state: LearningState): void {
   }
 
   if (state.history.length > 0) {
-    savedContent.append(renderLearningHistory(state.history));
+    savedContent.append(renderLearningHistory(state));
   }
   if (!savedPanel.hidden) {
     announce(`Saved 已載入 ${activeItems.length} 個 Learning Items。`);
@@ -423,7 +423,8 @@ function renderSuggestionContext(
   return section;
 }
 
-function renderLearningHistory(history: LearningMutation[]): HTMLElement {
+function renderLearningHistory(state: LearningState): HTMLElement {
+  const history = state.history;
   const section = element('section');
   section.className = 'learning-history';
   section.append(element('h2', 'Learning history'));
@@ -451,6 +452,12 @@ function renderLearningHistory(history: LearningMutation[]): HTMLElement {
           : `已復原：${new Date(mutation.undoneAt).toLocaleString('zh-TW')}`,
       ),
     );
+    if (
+      mutation.type === 'auto-merge' ||
+      mutation.type === 'learner-merge'
+    ) {
+      entry.append(renderMergeMutationDetails(mutation, state));
+    }
     if (mutation.id === latestActiveMutationId) {
       const undo = element('button', '復原');
       undo.addEventListener('click', () => {
@@ -465,6 +472,60 @@ function renderLearningHistory(history: LearningMutation[]): HTMLElement {
   }
   section.append(list);
   return section;
+}
+
+function renderMergeMutationDetails(
+  mutation: Extract<
+    LearningMutation,
+    { type: 'auto-merge' | 'learner-merge' }
+  >,
+  state: LearningState,
+): HTMLElement {
+  const details = element('section');
+  details.className = 'mutation-details';
+  details.append(element('h3', 'Merge participants'));
+  const source = state.learningItems.find(
+    (item) => item.id === mutation.sourceLearningItemId,
+  );
+  const target = state.learningItems.find(
+    (item) => item.id === mutation.targetLearningItemId,
+  );
+  details.append(
+    labelledText(
+      'Source Learning Item',
+      source === undefined
+        ? mutation.sourceLearningItemId
+        : `${source.expression} (${source.id})`,
+    ),
+    labelledText(
+      'Target Learning Item',
+      target === undefined
+        ? mutation.targetLearningItemId
+        : `${target.expression} (${target.id})`,
+    ),
+  );
+  for (const encounterId of [
+    ...mutation.targetEncounterIds,
+    ...mutation.encounterIds,
+  ]) {
+    const encounter = state.encounters.find(
+      (candidate) => candidate.id === encounterId,
+    );
+    const encounterDetails = element('section');
+    encounterDetails.className = 'mutation-encounter';
+    encounterDetails.append(element('h4', `Encounter ${encounterId}`));
+    if (encounter !== undefined) {
+      encounterDetails.append(
+        labelledText('Context', encounterContext(encounter)),
+        labelledText('Lookup Record', encounter.lookupRecordId),
+      );
+      if (encounter.sourceUrl !== undefined) {
+        encounterDetails.append(labelledText('Source', encounter.sourceUrl));
+      }
+    }
+    details.append(encounterDetails);
+  }
+  return details;
 }
 
 function learningMutationLabel(mutation: LearningMutation): string {

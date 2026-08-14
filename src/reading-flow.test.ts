@@ -1649,11 +1649,31 @@ describe('unpacked extension Reading Flow', () => {
       .poll(() => bankItem.getByText('She visited the Bank for a loan.').isVisible())
       .toBe(true);
 
-    await savedPanel
+    const learnerMergeHistory = savedPanel
       .locator('.learning-mutation')
-      .filter({ hasText: 'Learner 合併' })
-      .getByRole('button', { name: '復原' })
-      .click();
+      .filter({ hasText: 'Learner 合併' });
+    await expect
+      .poll(() =>
+        learnerMergeHistory
+          .getByText('lookup-bank-1', { exact: false })
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        learnerMergeHistory
+          .getByText('lookup-bank-2', { exact: false })
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        learnerMergeHistory
+          .getByText('https://finance.example/article', { exact: false })
+          .isVisible(),
+      )
+      .toBe(true);
+    await learnerMergeHistory.getByRole('button', { name: '復原' }).click();
     suggestion = savedPanel
       .locator('.merge-suggestion')
       .filter({ hasText: 'They sat on the river bank at sunset.' })
@@ -1703,7 +1723,7 @@ describe('unpacked extension Reading Flow', () => {
       .poll(() => savedPanel.locator('#saved-error').isVisible())
       .toBe(true);
     await expect
-      .poll(() => savedPanel.getByText('They postponed the vote.').isVisible())
+      .poll(() => postponedItem.getByText('They postponed the vote.').isVisible())
       .toBe(true);
     suggestion = savedPanel
       .locator('.merge-suggestion')
@@ -1739,12 +1759,24 @@ describe('unpacked extension Reading Flow', () => {
     sidePanel = await context.newPage();
     await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
     await sidePanel.getByRole('tab', { name: 'Saved' }).click();
+    const recoveredPostponedItem = sidePanel
+      .locator('.learning-item')
+      .filter({ hasText: 'Normalized expression: postponed' });
+    const recoveredBankItem = sidePanel
+      .locator('.learning-item')
+      .filter({ hasText: 'She visited the Bank for a loan.' });
     await expect
-      .poll(() => sidePanel.getByText('They postponed the vote.').isVisible())
+      .poll(() =>
+        recoveredPostponedItem
+          .getByText('They postponed the vote.')
+          .isVisible(),
+      )
       .toBe(true);
     await expect
       .poll(() =>
-        sidePanel.getByText('She visited the Bank for a loan.').isVisible(),
+        recoveredBankItem
+          .getByText('She visited the Bank for a loan.')
+          .isVisible(),
       )
       .toBe(true);
     await expect

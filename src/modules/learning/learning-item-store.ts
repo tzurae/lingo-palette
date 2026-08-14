@@ -96,6 +96,7 @@ const mergeMutationSchema = z
     sourceLearningItemId: z.string().min(1),
     targetLearningItemId: z.string().min(1),
     encounterIds: z.array(z.string().min(1)).min(1),
+    targetEncounterIds: z.array(z.string().min(1)).min(1),
     createdAt: z.string().datetime(),
     undoneAt: z.string().datetime().nullable(),
   })
@@ -353,6 +354,14 @@ export function createLearningItemStore(
           ...(lookup.sourceUrl === undefined ? {} : { sourceUrl: lookup.sourceUrl }),
           sensePin,
         };
+        const targetEncounterIds =
+          target === undefined
+            ? []
+            : state.encounters
+                .filter(
+                  (candidate) => candidate.learningItemId === target.id,
+                )
+                .map((candidate) => candidate.id);
         const next: LearningState = {
           ...state,
           learningItems: [...state.learningItems, learningItem],
@@ -385,6 +394,7 @@ export function createLearningItemStore(
                     sourceLearningItemId: learningItemId,
                     targetLearningItemId: target.id,
                     encounterIds: [encounterId],
+                    targetEncounterIds,
                     createdAt: timestamp,
                     undoneAt: null,
                   },
@@ -448,6 +458,9 @@ export function createLearningItemStore(
         const encounterIds = state.encounters
           .filter((encounter) => encounter.learningItemId === source.id)
           .map((encounter) => encounter.id);
+        const targetEncounterIds = state.encounters
+          .filter((encounter) => encounter.learningItemId === target.id)
+          .map((encounter) => encounter.id);
         if (encounterIds.length === 0) {
           throw new Error('來源 Learning Item 沒有可合併的 Encounter。');
         }
@@ -463,6 +476,7 @@ export function createLearningItemStore(
           sourceLearningItemId: source.id,
           targetLearningItemId: target.id,
           encounterIds,
+          targetEncounterIds,
           createdAt: timestamp,
           undoneAt: null,
         };
