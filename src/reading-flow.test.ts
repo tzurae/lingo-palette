@@ -17,6 +17,9 @@ import {
   OPENAI_BUDGET_LEDGER_STORAGE_KEY,
   OPENAI_BUDGET_SETTINGS_STORAGE_KEY,
 } from './modules/openai/budget-ledger';
+import { ACTIVE_EVIDENCE_INDEX_STORAGE_KEY } from './modules/learning/evidence-pack-lookup';
+import { LEARNING_STATE_STORAGE_KEY } from './modules/learning/learning-item-store';
+import { LOOKUP_RECORDS_STORAGE_KEY } from './modules/learning/lookup-record';
 
 declare const chrome: typeof browser;
 
@@ -1465,6 +1468,221 @@ describe('unpacked extension Reading Flow', () => {
       )
       .toBe(true);
   });
+
+  it('saves, classifies, resolves, undoes, and recovers Learning Items offline', async () => {
+    await worker.evaluate(
+      async ([lookupKey, evidenceKey, learningKey]) => {
+        const quickHint = {
+          type: 'quick-hint' as const,
+          result: {
+            simplerExpression: 'controlled result',
+            explanationCue: null,
+          },
+        };
+        const usage = { source: 'cache' as const, attempts: 0, provider: null };
+        await chrome.storage.local.remove(learningKey);
+        await chrome.storage.local.set({
+          [lookupKey]: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                id: 'lookup-bank-2',
+                selection: {
+                  text: 'Bank',
+                  context: { before: 'She visited the ', after: ' for a loan.' },
+                },
+                action: quickHint,
+                completedAt: '2026-08-14T14:04:00.000Z',
+                usage,
+                sourceUrl: 'https://finance.example/article',
+              },
+              {
+                version: 1,
+                id: 'lookup-bank-1',
+                selection: {
+                  text: 'bank',
+                  context: { before: 'They sat on the river ', after: ' at sunset.' },
+                },
+                action: quickHint,
+                completedAt: '2026-08-14T14:03:00.000Z',
+                usage,
+                sourceUrl: 'https://nature.example/article',
+              },
+              {
+                version: 1,
+                id: 'lookup-postponed-2',
+                selection: {
+                  text: 'Postponed',
+                  context: { before: 'The board ', after: ' its decision.' },
+                },
+                action: quickHint,
+                completedAt: '2026-08-14T14:02:00.000Z',
+                usage,
+                sourceUrl: 'https://board.example/article',
+              },
+              {
+                version: 1,
+                id: 'lookup-postponed-1',
+                selection: {
+                  text: 'postponed',
+                  context: { before: 'They ', after: ' the vote.' },
+                },
+                action: quickHint,
+                completedAt: '2026-08-14T14:01:00.000Z',
+                usage,
+                sourceUrl: 'https://news.example/article',
+              },
+            ],
+          },
+          [evidenceKey]: {
+            version: 1,
+            evidencePackVersion: 'oewn-browser-test-2025.1',
+            entries: [
+              {
+                normalizedExpression: 'postponed',
+                morphology: 'past-tense-of:postpone',
+                partOfSpeech: 'verb',
+                sourceSenseId: 'oewn:02642814-v',
+              },
+              {
+                normalizedExpression: 'bank',
+                morphology: 'lemma',
+                partOfSpeech: 'noun',
+                sourceSenseId: 'oewn:09213565-n',
+              },
+              {
+                normalizedExpression: 'bank',
+                morphology: 'lemma',
+                partOfSpeech: 'noun',
+                sourceSenseId: 'oewn:08420278-n',
+              },
+            ],
+          },
+        });
+      },
+      [
+        LOOKUP_RECORDS_STORAGE_KEY,
+        ACTIVE_EVIDENCE_INDEX_STORAGE_KEY,
+        LEARNING_STATE_STORAGE_KEY,
+      ] as const,
+    );
+
+    let sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await sidePanel.getByRole('tab', { name: 'Recent' }).click();
+    const saveLookup = async (selection: string) => {
+      const card = sidePanel.locator('.lookup-record').filter({
+        has: sidePanel.getByText(`Selection: ${selection}`, { exact: true }),
+      });
+      await card.getByRole('button', { name: '儲存到 Saved' }).click();
+      await expect
+        .poll(() => card.getByRole('button', { name: '已儲存' }).isDisabled())
+        .toBe(true);
+    };
+    await saveLookup('postponed');
+    await saveLookup('Postponed');
+    await saveLookup('bank');
+    await saveLookup('Bank');
+
+    await sidePanel.getByRole('tab', { name: 'Saved' }).click();
+    const savedPanel = sidePanel.getByRole('tabpanel', { name: 'Saved' });
+    const postponedItem = savedPanel
+      .locator('.learning-item')
+      .filter({ hasText: 'Normalized expression: postponed' });
+    await expect
+      .poll(() => postponedItem.getByText('They postponed the vote.').isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        postponedItem
+          .getByText('The board Postponed its decision.')
+          .isVisible(),
+      )
+      .toBe(true);
+
+    let suggestion = savedPanel
+      .locator('.merge-suggestion')
+      .filter({ hasText: 'They sat on the river bank at sunset.' })
+      .filter({ hasText: 'She visited the Bank for a loan.' });
+    await expect
+      .poll(() => suggestion.getByText('lookup-bank-1', { exact: false }).isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        suggestion
+          .getByText('https://finance.example/article', { exact: false })
+          .isVisible(),
+      )
+      .toBe(true);
+    await suggestion.getByRole('button', { name: '合併' }).click();
+    const bankItem = savedPanel
+      .locator('.learning-item')
+      .filter({ hasText: 'They sat on the river bank at sunset.' });
+    await expect
+      .poll(() => bankItem.getByText('She visited the Bank for a loan.').isVisible())
+      .toBe(true);
+
+    await savedPanel
+      .locator('.learning-mutation')
+      .filter({ hasText: 'Learner 合併' })
+      .getByRole('button', { name: '復原' })
+      .click();
+    suggestion = savedPanel
+      .locator('.merge-suggestion')
+      .filter({ hasText: 'They sat on the river bank at sunset.' })
+      .filter({ hasText: 'She visited the Bank for a loan.' });
+    await expect.poll(() => suggestion.isVisible()).toBe(true);
+    await suggestion.getByRole('button', { name: '保持分開' }).click();
+    await expect
+      .poll(() => savedPanel.getByText('已選擇保持分開').isVisible())
+      .toBe(true);
+
+    const productiveIntent = postponedItem.getByRole('checkbox', {
+      name: 'Productive-use Intent',
+    });
+    await productiveIntent.check();
+    await expect.poll(() => productiveIntent.isChecked()).toBe(true);
+
+    await sidePanel.close();
+    await context.close();
+    context = await chromium.launchPersistentContext(profilePath, {
+      headless: false,
+      offline: true,
+      args: [
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
+    });
+    worker =
+      context.serviceWorkers()[0] ??
+      (await context.waitForEvent('serviceworker'));
+    sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await sidePanel.getByRole('tab', { name: 'Saved' }).click();
+    await expect
+      .poll(() => sidePanel.getByText('They postponed the vote.').isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.getByText('She visited the Bank for a loan.').isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .locator('.learning-item')
+          .filter({ hasText: 'Normalized expression: postponed' })
+          .getByRole('checkbox', { name: 'Productive-use Intent' })
+          .isChecked(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() => sidePanel.getByText('已選擇保持分開').isVisible())
+      .toBe(true);
+  }, 60_000);
 });
 function extensionOriginFrom(extensionWorker: Worker): string {
   const url = new URL(extensionWorker.url());

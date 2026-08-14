@@ -6,6 +6,12 @@ import {
   createLookupRecordStore,
   sanitizeSourceUrl,
 } from '../src/modules/learning/lookup-record';
+import { createStoredEvidenceLookup } from '../src/modules/learning/evidence-pack-lookup';
+import { createLearningItemStore } from '../src/modules/learning/learning-item-store';
+import type {
+  LearningRequest,
+  LearningResponse,
+} from '../src/modules/learning/messages';
 import { z } from 'zod';
 import {
   createOpenAiConfigurationStore,
@@ -57,6 +63,10 @@ const openAiConfigurationStore = createOpenAiConfigurationStore(
 );
 const budgetLedger = createBudgetLedger(browser.storage.local);
 const lookupRecordStore = createLookupRecordStore(browser.storage.local);
+const learningItemStore = createLearningItemStore(
+  browser.storage.local,
+  createStoredEvidenceLookup(browser.storage.local),
+);
 const quickHintCacheStorageKey = 'quickHintCacheV1';
 const maximumQuickHintCacheEntries = 100;
 const deepDiveCacheStorageKey = 'deepDiveCacheV1';
@@ -273,7 +283,7 @@ function registerBackgroundListeners(): void {
 
   browser.runtime.onMessage.addListener(
     (
-      message: ReadingFlowRequest | OpenAiSettingsRequest,
+      message: ReadingFlowRequest | OpenAiSettingsRequest | LearningRequest,
       sender,
     ):
       | Promise<
@@ -282,6 +292,7 @@ function registerBackgroundListeners(): void {
           | QuickHintResponse
           | OpenAiSettingsResponse
           | RecentResponse
+          | LearningResponse
         >
       | undefined => {
       if (message.type === 'site-status') {
@@ -310,6 +321,16 @@ function registerBackgroundListeners(): void {
       }
       if (message.type === 'get-recent') {
         return getRecent(sender);
+      }
+      if (
+        message.type === 'get-saved' ||
+        message.type === 'save-lookup' ||
+        message.type === 'resolve-merge-suggestion' ||
+        message.type === 'undo-learning-mutation' ||
+        message.type === 'reclassify-encounter' ||
+        message.type === 'set-productive-use-intent'
+      ) {
+        return handleLearningRequest(message, sender);
       }
       return handleOpenAiSettings(message, sender);
     },
@@ -711,6 +732,54 @@ async function getRecent(
   }
   await backgroundInitialization;
   return { status: 'loaded', records: await lookupRecordStore.list() };
+}
+
+async function handleLearningRequest(
+  message: LearningRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<LearningResponse> {
+  if (!isTrustedExtensionSender(sender)) {
+    return {
+      status: 'failed',
+      message: '只有 Lingo Palette Side Panel 可以變更 Saved。',
+    };
+  }
+  await backgroundInitialization;
+  try {
+    if (message.type === 'save-lookup') {
+      const lookup = (await lookupRecordStore.list()).find(
+        (record) => record.id === message.lookupRecordId,
+      );
+      if (lookup === undefined) {
+        return { status: 'failed', message: '找不到要儲存的 Lookup Record。' };
+      }
+      await learningItemStore.saveLookup(lookup);
+    } else if (message.type === 'resolve-merge-suggestion') {
+      await learningItemStore.resolveMergeSuggestion(
+        message.suggestionId,
+        message.decision,
+      );
+    } else if (message.type === 'undo-learning-mutation') {
+      await learningItemStore.undoMutation(message.mutationId);
+    } else if (message.type === 'reclassify-encounter') {
+      await learningItemStore.reclassifyEncounter(
+        message.encounterId,
+        message.targetLearningItemId,
+      );
+    } else if (message.type === 'set-productive-use-intent') {
+      await learningItemStore.setProductiveUseIntent(
+        message.learningItemId,
+        message.enabled,
+      );
+    }
+    return { status: 'loaded', state: await learningItemStore.load() };
+  } catch (error) {
+    return {
+      status: 'failed',
+      message:
+        error instanceof Error ? error.message : '無法更新 Saved Learning Items。',
+    };
+  }
 }
 
 async function retryDeepDive(
