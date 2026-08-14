@@ -1404,6 +1404,7 @@ describe('unpacked extension Reading Flow', () => {
     await context.close();
     context = await chromium.launchPersistentContext(profilePath, {
       headless: false,
+      offline: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
         `--load-extension=${extensionPath}`,
@@ -1411,7 +1412,6 @@ describe('unpacked extension Reading Flow', () => {
         '--no-default-browser-check',
       ],
     });
-    await context.setOffline(true);
     worker =
       context.serviceWorkers()[0] ??
       (await context.waitForEvent('serviceworker'));
