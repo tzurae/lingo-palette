@@ -1,23 +1,10 @@
 import { z } from 'zod';
 import { parseDeepDive, type DeepDiveResult } from './deep-dive';
-import {
-  codePointLength,
-  CONTEXT_LIMIT,
-  SELECTION_LIMIT,
-  type Selection,
-} from './selection';
+import type { Selection } from './selection';
+import { selectionSchema } from './selection-parser';
 
 export const DEEP_DIVE_STATE_STORAGE_KEY = 'deepDiveStateV1';
 
-const boundedText = (limit: number) =>
-  z.string().refine((value) => codePointLength(value) <= limit);
-const selectionSchema = z.object({
-  text: boundedText(SELECTION_LIMIT).refine((value) => value.length > 0),
-  context: z.object({
-    before: boundedText(CONTEXT_LIMIT),
-    after: boundedText(CONTEXT_LIMIT),
-  }),
-});
 const currentSchema = z.object({
   selection: selectionSchema,
   result: z.unknown(),
@@ -29,6 +16,7 @@ const requestSchema = z.object({
   status: z.enum(['working', 'failed', 'cancelled']),
   message: z.string(),
   requestedAt: z.string().datetime(),
+  sourceUrl: z.string().url().optional(),
 });
 const storedStateSchema = z.object({
   version: z.literal(1),
@@ -47,6 +35,7 @@ export type DeepDiveRequestState = {
   status: 'working' | 'failed' | 'cancelled';
   message: string;
   requestedAt: string;
+  sourceUrl?: string;
 };
 export type DeepDiveState = {
   current: DeepDiveCurrent | null;
@@ -56,6 +45,9 @@ export type DeepDiveStateStorage = {
   get(key: string): Promise<Record<string, unknown>>;
   set(items: Record<string, unknown>): Promise<void>;
 };
+export type DeepDiveStateCommit = (
+  items: Record<string, unknown>,
+) => Promise<void>;
 export type DeepDiveOutcome =
   | { status: 'completed'; result: DeepDiveResult }
   | { status: 'failed' | 'cancelled'; message: string };
@@ -70,8 +62,12 @@ export function createDeepDiveStateStore(
   } = {},
 ): {
   load(): Promise<DeepDiveState>;
-  begin(selection: Selection): Promise<DeepDiveRequestState>;
-  settle(requestId: string, outcome: DeepDiveOutcome): Promise<DeepDiveState>;
+  begin(selection: Selection, sourceUrl?: string): Promise<DeepDiveRequestState>;
+  settle(
+    requestId: string,
+    outcome: DeepDiveOutcome,
+    commit?: DeepDiveStateCommit,
+  ): Promise<DeepDiveState>;
   cancel(requestId: string, message: string): Promise<DeepDiveState>;
   interruptRunning(): Promise<DeepDiveState>;
 } {
@@ -107,17 +103,34 @@ export function createDeepDiveStateStore(
                 ...parsed.data.current,
                 result: parseDeepDive(parsed.data.current.result),
               },
-        request: parsed.data.request,
+        request:
+          parsed.data.request === null
+            ? null
+            : (() => {
+                const { sourceUrl, ...request } = parsed.data.request;
+                return {
+                  ...request,
+                  ...(sourceUrl === undefined ? {} : { sourceUrl }),
+                };
+              })(),
       };
     } catch {
       return emptyState();
     }
   };
 
-  const save = async (state: DeepDiveState): Promise<void> => {
-    await storage.set({
+  const save = async (
+    state: DeepDiveState,
+    commit?: DeepDiveStateCommit,
+  ): Promise<void> => {
+    const items = {
       [DEEP_DIVE_STATE_STORAGE_KEY]: { version: 1, ...state },
-    });
+    };
+    if (commit === undefined) {
+      await storage.set(items);
+    } else {
+      await commit(items);
+    }
   };
 
   return {
@@ -125,7 +138,7 @@ export function createDeepDiveStateStore(
       return serialized(loadUnsafe);
     },
 
-    async begin(selection) {
+    async begin(selection, sourceUrl) {
       return serialized(async () => {
         const state = await loadUnsafe();
         const request: DeepDiveRequestState = {
@@ -134,13 +147,14 @@ export function createDeepDiveStateStore(
           status: 'working',
           message: '正在產生 Deep Dive…',
           requestedAt: now(),
+          ...(sourceUrl === undefined ? {} : { sourceUrl }),
         };
         await save({ ...state, request });
         return request;
       });
     },
 
-    async settle(requestId, outcome) {
+    async settle(requestId, outcome, commit) {
       return serialized(async () => {
         const state = await loadUnsafe();
         if (
@@ -164,7 +178,7 @@ export function createDeepDiveStateStore(
             },
             request: null,
           };
-          await save(next);
+          await save(next, commit);
           return next;
         }
         const next: DeepDiveState = {

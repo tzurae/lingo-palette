@@ -325,17 +325,35 @@ describe('unpacked extension Reading Flow', () => {
       )
       .toBe(true);
     await expect
-      .poll(() => sidePanel.getByText(firstResult.contextualMeaning).isVisible())
-      .toBe(true);
-    await expect
-      .poll(() => sidePanel.getByText('postpone + noun').isVisible())
-      .toBe(true);
-    await expect
-      .poll(() => sidePanel.getByText('put off', { exact: true }).isVisible())
+      .poll(() =>
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText(firstResult.contextualMeaning)
+          .isVisible(),
+      )
       .toBe(true);
     await expect
       .poll(() =>
-        sidePanel.getByText('The committee postponed the vote.').isVisible(),
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText('postpone + noun')
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText('put off', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText('The committee postponed the vote.')
+          .isVisible(),
       )
       .toBe(true);
 
@@ -345,7 +363,12 @@ describe('unpacked extension Reading Flow', () => {
     sidePanel = await context.newPage();
     await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
     await expect
-      .poll(() => sidePanel.getByText(firstResult.contextualMeaning).isVisible())
+      .poll(() =>
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText(firstResult.contextualMeaning)
+          .isVisible(),
+      )
       .toBe(true);
     await unrelatedTab.close();
 
@@ -376,9 +399,15 @@ describe('unpacked extension Reading Flow', () => {
       .toBe(true);
     await expect
       .poll(() =>
-        sidePanel.getByText(/Selection: postpone/, { exact: false }).isVisible(),
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText(/Selection: postpone/, { exact: false })
+          .isVisible(),
       )
       .toBe(true);
+    expect(await sidePanel.locator('#live-status').textContent()).not.toContain(
+      'Recent 已載入',
+    );
 
     const secondResult = {
       ...firstResult,
@@ -398,15 +427,28 @@ describe('unpacked extension Reading Flow', () => {
     await selectTextByPointer(page, '#copy', 'committee');
     await page.getByRole('button', { name: 'Deep Dive' }).click();
     await expect
-      .poll(() => sidePanel.getByText(secondResult.contextualMeaning).isVisible())
-      .toBe(true);
-    await expect
       .poll(() =>
-        sidePanel.getByText(/Selection: committee/, { exact: false }).isVisible(),
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText(secondResult.contextualMeaning)
+          .isVisible(),
       )
       .toBe(true);
     await expect
-      .poll(() => sidePanel.getByText(firstResult.contextualMeaning).count())
+      .poll(() =>
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText(/Selection: committee/, { exact: false })
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText(firstResult.contextualMeaning)
+          .count(),
+      )
       .toBe(0);
 
     await worker.evaluate(async (result) => {
@@ -446,7 +488,10 @@ describe('unpacked extension Reading Flow', () => {
       .toBe(true);
     await expect
       .poll(() =>
-        sidePanel.getByText(/Selection: committee/, { exact: false }).isVisible(),
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText(/Selection: committee/, { exact: false })
+          .isVisible(),
       )
       .toBe(true);
     await sidePanel.getByRole('button', { name: '取消 Deep Dive' }).click();
@@ -502,7 +547,10 @@ describe('unpacked extension Reading Flow', () => {
       .toBe(true);
     await expect
       .poll(() =>
-        sidePanel.getByText(/Selection: committee/, { exact: false }).isVisible(),
+        sidePanel
+          .getByRole('tabpanel', { name: 'Current' })
+          .getByText(/Selection: committee/, { exact: false })
+          .isVisible(),
       )
       .toBe(true);
     await expect
@@ -512,6 +560,29 @@ describe('unpacked extension Reading Flow', () => {
           .isVisible(),
       )
       .toBe(true);
+    const lookupRecords = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get('lookupRecordsV1');
+      return stored.lookupRecordsV1;
+    });
+    expect(lookupRecords).toEqual(
+      expect.objectContaining({
+        version: 1,
+        records: expect.arrayContaining([
+          expect.objectContaining({
+            version: 1,
+            action: expect.objectContaining({ type: 'quick-hint' }),
+          }),
+          expect.objectContaining({
+            version: 1,
+            action: expect.objectContaining({ type: 'deep-dive' }),
+          }),
+        ]),
+      }),
+    );
+    expect(
+      (lookupRecords as { records: Array<{ selection: { text: string } }> })
+        .records.some((record) => record.selection.text === 'vote'),
+    ).toBe(false);
 
 
     const requests = await worker.evaluate(async () => {
@@ -1298,7 +1369,23 @@ describe('unpacked extension Reading Flow', () => {
     }, OPENAI_BUDGET_SETTINGS_STORAGE_KEY);
   });
 
-  it('keeps portable configuration after an offline browser restart while the key remains removable', async () => {
+  it('recovers a completed Lookup in Recent after an offline browser restart while Saved remains empty', async () => {
+    await worker.evaluate(async () => {
+      await chrome.storage.local.set({
+        openAiTestOnline: true,
+        openAiTestResponses: [],
+        quickHintTestFixture: {
+          simplerExpression: '<img src=x onerror=alert(1)>',
+          explanationCue: '[data-command=\"erase\"]',
+        },
+      });
+    });
+    await replaceCopyAndSelect('offline Recent lookup');
+    await page.getByRole('button', { name: '快速提示' }).click();
+    await expect
+      .poll(() => page.getByRole('status').textContent())
+      .toContain('快速提示已完成');
+
     const settings = await context.newPage();
     await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
     await settings.getByRole('button', { name: '移除已儲存的 API key' }).click();
@@ -1317,6 +1404,7 @@ describe('unpacked extension Reading Flow', () => {
     await context.close();
     context = await chromium.launchPersistentContext(profilePath, {
       headless: false,
+      offline: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
         `--load-extension=${extensionPath}`,
@@ -1324,7 +1412,6 @@ describe('unpacked extension Reading Flow', () => {
         '--no-default-browser-check',
       ],
     });
-    await context.setOffline(true);
     worker =
       context.serviceWorkers()[0] ??
       (await context.waitForEvent('serviceworker'));
@@ -1359,6 +1446,24 @@ describe('unpacked extension Reading Flow', () => {
         },
       }),
     });
+    const sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await sidePanel.getByRole('tab', { name: 'Recent' }).click();
+    await expect
+      .poll(() => sidePanel.getByText('offline Recent lookup').isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.getByText('<img src=x onerror=alert(1)>').isVisible(),
+      )
+      .toBe(true);
+    expect(await sidePanel.locator('img').count()).toBe(0);
+    await sidePanel.getByRole('tab', { name: 'Saved' }).click();
+    await expect
+      .poll(() =>
+        sidePanel.getByText('目前沒有已儲存的 Learning Items。').isVisible(),
+      )
+      .toBe(true);
   });
 });
 function extensionOriginFrom(extensionWorker: Worker): string {

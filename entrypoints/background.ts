@@ -2,6 +2,10 @@ import {
   createBudgetLedger,
   type ProviderUsage,
 } from '../src/modules/openai/budget-ledger';
+import {
+  createLookupRecordStore,
+  sanitizeSourceUrl,
+} from '../src/modules/learning/lookup-record';
 import { z } from 'zod';
 import {
   createOpenAiConfigurationStore,
@@ -31,20 +35,19 @@ import {
 } from '../src/modules/openai/openai-responses';
 import { parseDeepDive } from '../src/modules/reading-flow/deep-dive';
 import { createDeepDiveStateStore } from '../src/modules/reading-flow/deep-dive-state';
-import {
-  parseQuickHint,
-  parseQuickHintSelection,
-} from '../src/modules/reading-flow/quick-hint';
+import { parseQuickHint } from '../src/modules/reading-flow/quick-hint';
 import {
   isSupportedOrigin,
   scriptIdFor,
 } from '../src/modules/reading-flow/site-permission';
 import type { Selection } from '../src/modules/reading-flow/selection';
+import { parseSelection } from '../src/modules/reading-flow/selection-parser';
 import type {
   DeepDiveResponse,
   EnableSiteResponse,
   QuickHintResponse,
   ReadingFlowRequest,
+  RecentResponse,
 } from '../src/modules/reading-flow/messages';
 
 const readingFlowScript = '/reading-flow.js';
@@ -53,19 +56,22 @@ const openAiConfigurationStore = createOpenAiConfigurationStore(
   browser.storage.local,
 );
 const budgetLedger = createBudgetLedger(browser.storage.local);
+const lookupRecordStore = createLookupRecordStore(browser.storage.local);
 const quickHintCacheStorageKey = 'quickHintCacheV1';
 const maximumQuickHintCacheEntries = 100;
 const deepDiveCacheStorageKey = 'deepDiveCacheV1';
 const maximumDeepDiveCacheEntries = 100;
-let quickHintCacheWritePending = Promise.resolve();
-let deepDiveCacheWritePending = Promise.resolve();
 let activeOpenAiProbe: AbortController | null = null;
 let openAiActivationVersion = 0;
-let openAiConfigurationMutationPending = Promise.resolve();
-const activeQuickHints = new Map<string, AbortController>();
+type QuickHintActivity = {
+  controller: AbortController;
+  completionClaimed: boolean;
+};
+const activeQuickHints = new Map<string, QuickHintActivity>();
 let activeDeepDive: {
   requestId: string;
   controller: AbortController;
+  completionClaimed: boolean;
 } | null = null;
 const quickHintCacheSchema = z.record(z.string(), z.unknown());
 let deepDiveStartVersion = 0;
@@ -213,47 +219,27 @@ const deepDiveExecutor = createDeepDiveExecutor({
   random: Math.random,
 });
 
-async function serializeQuickHintCacheWrite(
-  operation: () => Promise<void>,
-): Promise<void> {
-  const previous = quickHintCacheWritePending;
-  const completion = Promise.withResolvers<void>();
-  quickHintCacheWritePending = completion.promise;
-  await previous;
-  try {
-    await operation();
-  } finally {
-    completion.resolve();
-  }
-}
-
-async function serializeDeepDiveCacheWrite(
-  operation: () => Promise<void>,
-): Promise<void> {
-  const previous = deepDiveCacheWritePending;
-  const completion = Promise.withResolvers<void>();
-  deepDiveCacheWritePending = completion.promise;
-  await previous;
-  try {
-    await operation();
-  } finally {
-    completion.resolve();
-  }
-}
-
-async function serializeOpenAiConfigurationMutation<T>(
+function createSerialExecutor(): <T>(
   operation: () => Promise<T>,
-): Promise<T> {
-  const previous = openAiConfigurationMutationPending;
-  const completion = Promise.withResolvers<void>();
-  openAiConfigurationMutationPending = completion.promise;
-  await previous;
-  try {
-    return await operation();
-  } finally {
-    completion.resolve();
-  }
+) => Promise<T> {
+  let pending = Promise.resolve();
+  return async <T>(operation: () => Promise<T>): Promise<T> => {
+    const previous = pending;
+    const completion = Promise.withResolvers<void>();
+    pending = completion.promise;
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      completion.resolve();
+    }
+  };
 }
+
+const serializeQuickHintCacheWrite = createSerialExecutor();
+const serializeDeepDiveCacheWrite = createSerialExecutor();
+const serializeDeepDiveLifecycle = createSerialExecutor();
+const serializeOpenAiConfigurationMutation = createSerialExecutor();
 
 let backgroundInitialization = Promise.resolve();
 
@@ -295,6 +281,7 @@ function registerBackgroundListeners(): void {
           | EnableSiteResponse
           | QuickHintResponse
           | OpenAiSettingsResponse
+          | RecentResponse
         >
       | undefined => {
       if (message.type === 'site-status') {
@@ -320,6 +307,9 @@ function registerBackgroundListeners(): void {
       }
       if (message.type === 'cancel-deep-dive') {
         return cancelDeepDive(sender);
+      }
+      if (message.type === 'get-recent') {
+        return getRecent(sender);
       }
       return handleOpenAiSettings(message, sender);
     },
@@ -393,13 +383,17 @@ async function generateQuickHint(
   sender: Browser.runtime.MessageSender,
 ): Promise<QuickHintResponse> {
   const requestKey = quickHintRequestKey(sender);
-  const controller = new AbortController();
-  activeQuickHints.get(requestKey)?.abort();
-  activeQuickHints.set(requestKey, controller);
+  const prior = activeQuickHints.get(requestKey);
+  if (prior?.completionClaimed === false) prior.controller.abort();
+  const activity: QuickHintActivity = {
+    controller: new AbortController(),
+    completionClaimed: false,
+  };
+  activeQuickHints.set(requestKey, activity);
   try {
-    return await generateQuickHintRequest(selection, sender, controller);
+    return await generateQuickHintRequest(selection, sender, activity);
   } finally {
-    if (activeQuickHints.get(requestKey) === controller) {
+    if (activeQuickHints.get(requestKey) === activity) {
       activeQuickHints.delete(requestKey);
     }
   }
@@ -408,7 +402,7 @@ async function generateQuickHint(
 async function generateQuickHintRequest(
   selection: Selection,
   sender: Browser.runtime.MessageSender,
-  controller: AbortController,
+  activity: QuickHintActivity,
 ): Promise<QuickHintResponse> {
   const origin = originForSender(sender);
   if (
@@ -423,7 +417,7 @@ async function generateQuickHintRequest(
 
   let providerSelection: Selection;
   try {
-    providerSelection = parseQuickHintSelection(selection);
+    providerSelection = parseSelection(selection);
   } catch {
     return {
       status: 'failed',
@@ -445,7 +439,7 @@ async function generateQuickHintRequest(
         configuration: settings.configuration,
         selection: providerSelection,
       },
-      controller.signal,
+      activity.controller.signal,
       (progress) => {
         const tabId = sender.tab?.id;
         if (tabId === undefined) return;
@@ -461,6 +455,23 @@ async function generateQuickHintRequest(
           .catch(() => undefined);
       },
     );
+    if (activity.controller.signal.aborted) {
+      return {
+        status: 'cancelled',
+        message: '已取消 Quick Hint；Selection 仍保留。',
+      };
+    }
+    activity.completionClaimed = true;
+    await lookupRecordStore.append({
+      selection: providerSelection,
+      action: { type: 'quick-hint', result: outcome.result },
+      usage: {
+        source: outcome.source,
+        attempts: outcome.attempts,
+        provider: outcome.usage,
+      },
+      ...(sender.url === undefined ? {} : { sourceUrl: sender.url }),
+    });
     return { status: 'completed', ...outcome };
   } catch (error) {
     if (error instanceof AssistanceFailure) {
@@ -487,7 +498,14 @@ async function generateQuickHintRequest(
 async function cancelQuickHint(
   sender: Browser.runtime.MessageSender,
 ): Promise<QuickHintResponse> {
-  activeQuickHints.get(quickHintRequestKey(sender))?.abort();
+  const activity = activeQuickHints.get(quickHintRequestKey(sender));
+  if (activity?.completionClaimed === true) {
+    return {
+      status: 'failed',
+      message: 'Quick Hint 已完成並保存到 Recent；取消未生效。',
+    };
+  }
+  activity?.controller.abort();
   return { status: 'cancelled', message: '已取消 Quick Hint；Selection 仍保留。' };
 }
 
@@ -503,7 +521,7 @@ async function startDeepDive(
 
   let providerSelection: Selection;
   try {
-    providerSelection = parseQuickHintSelection(selection);
+    providerSelection = parseSelection(selection);
   } catch {
     return {
       status: 'failed',
@@ -539,32 +557,50 @@ async function startDeepDive(
     };
   }
 
-  return beginDeepDive(providerSelection);
+  return beginDeepDive(providerSelection, sender.url);
 }
 
 async function beginDeepDive(
   selection: Selection,
+  sourceUrl?: string,
 ): Promise<DeepDiveResponse> {
   const startVersion = deepDiveStartVersion + 1;
   deepDiveStartVersion = startVersion;
-  activeDeepDive?.controller.abort();
-  const request = await deepDiveStateStore.begin(selection);
-  if (startVersion !== deepDiveStartVersion) {
-    const message =
-      '此 Deep Dive 已由較新的明確要求取代；Selection 仍保留。';
-    await deepDiveStateStore.cancel(request.id, message);
-    return { status: 'cancelled', message };
+  if (activeDeepDive?.completionClaimed === false) {
+    activeDeepDive.controller.abort();
   }
-  const controller = new AbortController();
-  activeDeepDive = { requestId: request.id, controller };
-  void executeDeepDive(request.id, selection, controller);
-  return { status: 'started', requestId: request.id };
+  return serializeDeepDiveLifecycle(async () => {
+    const request = await deepDiveStateStore.begin(
+      selection,
+      sanitizeSourceUrl(sourceUrl),
+    );
+    if (startVersion !== deepDiveStartVersion) {
+      const message =
+        '此 Deep Dive 已由較新的明確要求取代；Selection 仍保留。';
+      await deepDiveStateStore.cancel(request.id, message);
+      return { status: 'cancelled', message };
+    }
+    const controller = new AbortController();
+    activeDeepDive = {
+      requestId: request.id,
+      controller,
+      completionClaimed: false,
+    };
+    void executeDeepDive(
+      request.id,
+      selection,
+      controller,
+      request.sourceUrl,
+    );
+    return { status: 'started', requestId: request.id };
+  });
 }
 
 async function executeDeepDive(
   requestId: string,
   selection: Selection,
   controller: AbortController,
+  sourceUrl?: string,
 ): Promise<void> {
   try {
     const settings = await openAiConfigurationStore.loadSettings();
@@ -580,16 +616,56 @@ async function executeDeepDive(
       },
       controller.signal,
     );
-    if (controller.signal.aborted) {
-      await deepDiveStateStore.cancel(
+    await serializeDeepDiveLifecycle(async () => {
+      if (controller.signal.aborted) {
+        await deepDiveStateStore.cancel(
+          requestId,
+          '已取消 Deep Dive；Selection 仍保留，可明確重試。',
+        );
+        return;
+      }
+      const state = await deepDiveStateStore.load();
+      if (
+        state.request?.id !== requestId ||
+        state.request.status !== 'working'
+      ) {
+        return;
+      }
+      const activity = activeDeepDive;
+      if (
+        activity?.requestId !== requestId ||
+        activity.controller !== controller
+      ) {
+        return;
+      }
+      activity.completionClaimed = true;
+      await deepDiveStateStore.settle(
         requestId,
-        '已取消 Deep Dive；Selection 仍保留，可明確重試。',
+        {
+          status: 'completed',
+          result: outcome.result,
+        },
+        async (deepDiveItems) => {
+          await lookupRecordStore.append(
+            {
+              selection,
+              action: { type: 'deep-dive', result: outcome.result },
+              usage: {
+                source: outcome.source,
+                attempts: outcome.attempts,
+                provider: outcome.usage,
+              },
+              ...(sourceUrl === undefined ? {} : { sourceUrl }),
+            },
+            async (lookupItems) => {
+              await browser.storage.local.set({
+                ...deepDiveItems,
+                ...lookupItems,
+              });
+            },
+          );
+        },
       );
-      return;
-    }
-    await deepDiveStateStore.settle(requestId, {
-      status: 'completed',
-      result: outcome.result,
     });
   } catch (error) {
     const failure =
@@ -603,10 +679,12 @@ async function executeDeepDive(
                 : 'OpenAI assistance 無法產生 Deep Dive。',
             retryable: false,
           });
-    await deepDiveStateStore.settle(requestId, {
-      status: failure.kind === 'cancelled' ? 'cancelled' : 'failed',
-      message: failure.message,
-    });
+    await serializeDeepDiveLifecycle(() =>
+      deepDiveStateStore.settle(requestId, {
+        status: failure.kind === 'cancelled' ? 'cancelled' : 'failed',
+        message: failure.message,
+      }),
+    );
   } finally {
     if (activeDeepDive?.controller === controller) activeDeepDive = null;
   }
@@ -622,6 +700,19 @@ async function getDeepDiveState(
   return { status: 'loaded', state: await deepDiveStateStore.load() };
 }
 
+async function getRecent(
+  sender: Browser.runtime.MessageSender,
+): Promise<RecentResponse> {
+  if (!isTrustedExtensionSender(sender)) {
+    return {
+      status: 'failed',
+      message: '只有 Lingo Palette Side Panel 可以讀取 Recent。',
+    };
+  }
+  await backgroundInitialization;
+  return { status: 'loaded', records: await lookupRecordStore.list() };
+}
+
 async function retryDeepDive(
   sender: Browser.runtime.MessageSender,
 ): Promise<DeepDiveResponse> {
@@ -633,7 +724,7 @@ async function retryDeepDive(
   if (state.request === null || state.request.status === 'working') {
     return { status: 'failed', message: '目前沒有可重試的 Deep Dive。' };
   }
-  return beginDeepDive(state.request.selection);
+  return beginDeepDive(state.request.selection, state.request.sourceUrl);
 }
 
 async function cancelDeepDive(
@@ -645,22 +736,24 @@ async function cancelDeepDive(
   await backgroundInitialization;
   deepDiveStartVersion += 1;
   const active = activeDeepDive;
-  active?.controller.abort();
+  if (active?.completionClaimed === false) active.controller.abort();
   const message = '已取消 Deep Dive；Selection 仍保留，可明確重試。';
-  if (active !== null) {
+  return serializeDeepDiveLifecycle(async () => {
+    if (active !== null) {
+      return {
+        status: 'loaded',
+        state: await deepDiveStateStore.cancel(active.requestId, message),
+      };
+    }
+    const state = await deepDiveStateStore.load();
+    if (state.request?.status !== 'working') {
+      return { status: 'loaded', state };
+    }
     return {
       status: 'loaded',
-      state: await deepDiveStateStore.cancel(active.requestId, message),
+      state: await deepDiveStateStore.cancel(state.request.id, message),
     };
-  }
-  const state = await deepDiveStateStore.load();
-  if (state.request?.status !== 'working') {
-    return { status: 'loaded', state };
-  }
-  return {
-    status: 'loaded',
-    state: await deepDiveStateStore.cancel(state.request.id, message),
-  };
+  });
 }
 
 async function handleOpenAiSettings(
