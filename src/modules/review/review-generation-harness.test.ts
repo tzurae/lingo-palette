@@ -62,6 +62,7 @@ const passingEvaluation = {
   distractorSafety: 'pass' as const,
   correctiveExplanation: 'pass' as const,
   validAlternativeAnswers: ['delay until later'],
+  partialAnswers: ['moved somehow'],
   evidenceAssessments: [
     {
       evidenceId: 'oewn-2025:02648898-v',
@@ -261,10 +262,9 @@ describe('Review Generation harness', () => {
           type: 'contrastive',
           prompt: groundedCandidate.prompt,
           contextQuote: groundedCandidate.contextQuote,
-          acceptedAnswers: [
-            'hold back to a later time',
-            'delay until later',
-          ],
+          targetAnswers: ['hold back to a later time'],
+          acceptableAlternativeAnswers: ['delay until later'],
+          partialAnswers: ['moved somehow'],
           distractors: groundedCandidate.distractors,
           correctiveExplanation: groundedCandidate.correctiveExplanation,
         },
@@ -327,7 +327,7 @@ describe('Review Generation harness', () => {
       generation: generationPin,
       candidate: {
         ...groundedCandidate,
-        distractors: ['delay until later', 'approve immediately'],
+        distractors: ['delay  until later', 'approve immediately'],
       },
     });
 
@@ -339,10 +339,9 @@ describe('Review Generation harness', () => {
           type: 'recall',
           prompt: 'What does “postponed” mean in this context?',
           contextQuote: groundedCandidate.contextQuote,
-          acceptedAnswers: [
-            'hold back to a later time',
-            'delay until later',
-          ],
+          targetAnswers: ['hold back to a later time'],
+          acceptableAlternativeAnswers: ['delay until later'],
+          partialAnswers: ['moved somehow'],
           correctiveExplanation:
             'Here, “postponed” means “hold back to a later time”.',
         },

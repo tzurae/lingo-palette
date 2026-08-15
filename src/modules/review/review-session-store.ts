@@ -1,7 +1,19 @@
 import { z } from 'zod';
+import {
+  calibrationFor,
+  retrievalFluencySchema,
+  reviewEvidenceSchema,
+  normalizeReviewAnswer,
+  reviewJudgmentSchema,
+  transitionReviewSchedule,
+  type ReviewEvidence,
+  type ReviewJudgment,
+  type RetrievalFluency,
+} from './review-evidence';
 import type { ApprovedReviewItem } from './review-generation-harness';
 import {
   APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+  REVIEW_EVIDENCE_STORAGE_KEY,
   REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
   REVIEW_SCHEDULES_STORAGE_KEY,
   REVIEW_SESSIONS_STORAGE_KEY,
@@ -9,7 +21,39 @@ import {
 
 
 const knowledgeDimensionSchema = z.literal('contextual-meaning');
+const scheduleKnowledgeDimensionSchema = z.enum([
+  'contextual-meaning',
+  'usage-fit',
+  'grammar-pattern',
+  'collocation',
+  'productive-use',
+]);
 const taskSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('contrastive'),
+      prompt: z.string().min(1),
+      contextQuote: z.string().min(1),
+      targetAnswers: z.array(z.string().min(1)).min(1),
+      acceptableAlternativeAnswers: z.array(z.string().min(1)),
+      partialAnswers: z.array(z.string().min(1)),
+      distractors: z.array(z.string().min(1)).min(1),
+      correctiveExplanation: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('recall'),
+      prompt: z.string().min(1),
+      contextQuote: z.string().min(1),
+      targetAnswers: z.array(z.string().min(1)).min(1),
+      acceptableAlternativeAnswers: z.array(z.string().min(1)),
+      partialAnswers: z.array(z.string().min(1)),
+      correctiveExplanation: z.string().min(1),
+    })
+    .strict(),
+]);
+const legacyTaskSchema = z.discriminatedUnion('type', [
   z
     .object({
       type: z.literal('contrastive'),
@@ -30,13 +74,25 @@ const taskSchema = z.discriminatedUnion('type', [
     })
     .strict(),
 ]);
+const compatibleTaskSchema = z
+  .union([taskSchema, legacyTaskSchema])
+  .transform((task) => {
+    if (!('acceptedAnswers' in task)) return task;
+    const { acceptedAnswers, ...legacyTask } = task;
+    return {
+      ...legacyTask,
+      targetAnswers: [],
+      acceptableAlternativeAnswers: acceptedAnswers,
+      partialAnswers: [],
+    };
+  });
 const approvedReviewItemSchema = z
   .object({
     version: z.literal(1),
     id: z.string().min(1),
     learningItemId: z.string().min(1),
     knowledgeDimension: knowledgeDimensionSchema,
-    task: taskSchema,
+    task: compatibleTaskSchema,
     provenance: z
       .object({
         approvedAt: z.iso.datetime(),
@@ -57,7 +113,7 @@ const scheduleSchema = z
   .object({
     version: z.literal(1),
     learningItemId: z.string().min(1),
-    knowledgeDimension: knowledgeDimensionSchema,
+    knowledgeDimension: scheduleKnowledgeDimensionSchema,
     dueAt: z.iso.datetime(),
     demonstratedCount: z.number().int().nonnegative(),
     intervalStage: z.number().int().min(0).max(8),
@@ -69,6 +125,47 @@ const scheduleStateSchema = z
     records: z.array(scheduleSchema),
   })
   .strict();
+const scheduleTransitionSchema = z
+  .object({
+    previous: z
+      .object({
+        dueAt: z.iso.datetime(),
+        demonstratedCount: z.number().int().nonnegative(),
+        intervalStage: z.number().int().min(0).max(8),
+      })
+      .strict(),
+    next: z
+      .object({
+        dueAt: z.iso.datetime(),
+        demonstratedCount: z.number().int().nonnegative(),
+        intervalStage: z.number().int().min(0).max(8),
+      })
+      .strict(),
+  })
+  .strict();
+const recordedEvidenceSchema = z.intersection(
+  reviewEvidenceSchema,
+  z.object({ scheduleTransition: scheduleTransitionSchema }),
+);
+const evidenceStateSchema = z
+  .object({
+    version: z.literal(1),
+    records: z.array(recordedEvidenceSchema),
+  })
+  .strict()
+  .superRefine((state, context) => {
+    const ids = new Set<string>();
+    for (const [index, record] of state.records.entries()) {
+      if (ids.has(record.id)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['records', index, 'id'],
+          message: `Duplicate Review Evidence ID ${record.id}.`,
+        });
+      }
+      ids.add(record.id);
+    }
+  });
 const sessionSchema = z
   .object({
     version: z.literal(1),
@@ -108,35 +205,47 @@ const learningItemSchema = z
     status: z.enum(['active', 'merged']),
   })
   .passthrough();
+const answerInputSchema = z
+  .object({
+    retrievalFluency: retrievalFluencySchema,
+    responseText: z.string().trim().min(1).max(4_000).optional(),
+  })
+  .strict();
 
 export type ReviewSchedule = z.infer<typeof scheduleSchema>;
 export type ReviewSessionRecord = z.infer<typeof sessionSchema>;
+export type RecordedReviewEvidence = z.infer<typeof recordedEvidenceSchema>;
 export type ReviewSessionStorage = {
   get(key: string): Promise<Record<string, unknown>>;
   set(items: Record<string, unknown>): Promise<void>;
 };
+export type ReviewResponseEvaluator = {
+  evaluate(input: {
+    item: ApprovedReviewItem;
+    responseText: string;
+  }): Promise<unknown>;
+};
+type ReviewCurrentBase = Readonly<{
+  reviewItemId: string;
+  learningItemId: string;
+  knowledgeDimension: 'contextual-meaning';
+  taskType: ApprovedReviewItem['task']['type'];
+  prompt: string;
+  contextQuote: string;
+  attemptKind: ReviewEvidence['kind'];
+}>;
 export type ReviewSessionCurrent =
-  | Readonly<{
-      revealed: false;
-      reviewItemId: string;
-      learningItemId: string;
-      knowledgeDimension: 'contextual-meaning';
-      taskType: ApprovedReviewItem['task']['type'];
-      prompt: string;
-      contextQuote: string;
-    }>
-  | Readonly<{
-      revealed: true;
-      reviewItemId: string;
-      learningItemId: string;
-      knowledgeDimension: 'contextual-meaning';
-      taskType: ApprovedReviewItem['task']['type'];
-      prompt: string;
-      contextQuote: string;
-      acceptedAnswers: readonly string[];
-      distractors: readonly string[];
-      correctiveExplanation: string;
-    }>;
+  | (ReviewCurrentBase & Readonly<{ revealed: false }>)
+  | (ReviewCurrentBase &
+      Readonly<{
+        revealed: true;
+        targetAnswers: readonly string[];
+        acceptableAlternativeAnswers: readonly string[];
+        partialAnswers: readonly string[];
+        distractors: readonly string[];
+        correctiveExplanation: string;
+        evidence: ReviewEvidence;
+      }>);
 export type ReviewSessionView = Readonly<{
   id: string;
   status: 'active' | 'completed';
@@ -150,12 +259,14 @@ export type ReviewSessionView = Readonly<{
 const emptyApprovedState = () => ({ version: 1 as const, records: [] });
 const emptyScheduleState = () => ({ version: 1 as const, records: [] });
 const emptySessionState = () => ({ version: 1 as const, records: [] });
+const emptyEvidenceState = () => ({ version: 1 as const, records: [] });
 
 export function createReviewSessionStore(
   storage: ReviewSessionStorage,
   dependencies: {
     id?: () => string;
     now?: () => string;
+    evaluator?: ReviewResponseEvaluator;
   } = {},
 ): {
   approve(
@@ -172,7 +283,13 @@ export function createReviewSessionStore(
     | { status: 'unavailable'; eligibleCount: 0 }
     | { status: 'started' | 'active'; session: ReviewSessionView }
   >;
-  reveal(sessionId: string): Promise<{
+  answer(
+    sessionId: string,
+    input: {
+      retrievalFluency: RetrievalFluency;
+      responseText?: string;
+    },
+  ): Promise<{
     status: 'revealed';
     session: ReviewSessionView;
   }>;
@@ -184,10 +301,12 @@ export function createReviewSessionStore(
     eligibleCount: number;
     activeSession: ReviewSessionView | null;
     schedules: readonly ReviewSchedule[];
+    evidence: readonly RecordedReviewEvidence[];
   }>;
 } {
   const id = dependencies.id ?? (() => crypto.randomUUID());
   const now = dependencies.now ?? (() => new Date().toISOString());
+  const evaluator = dependencies.evaluator ?? deterministicReviewEvaluator;
   let pending = Promise.resolve();
   const serialized = async <T>(operation: () => Promise<T>): Promise<T> => {
     const previous = pending;
@@ -258,7 +377,7 @@ export function createReviewSessionStore(
     start(learningItems) {
       return serialized(async () => {
         const parsedLearningItems = z.array(learningItemSchema).parse(learningItems);
-        const [approvedState, scheduleState, sessionState, markers] =
+        const [approvedState, scheduleState, sessionState, evidenceState, markers] =
           await Promise.all([
             loadState(
               storage,
@@ -278,6 +397,12 @@ export function createReviewSessionStore(
               sessionStateSchema,
               emptySessionState,
             ),
+            loadState(
+              storage,
+              REVIEW_EVIDENCE_STORAGE_KEY,
+              evidenceStateSchema,
+              emptyEvidenceState,
+            ),
             loadOptionalState(
               storage,
               REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
@@ -290,7 +415,11 @@ export function createReviewSessionStore(
         if (activeSession !== undefined) {
           return {
             status: 'active' as const,
-            session: sessionView(activeSession, approvedState.records),
+            session: sessionView(
+              activeSession,
+              approvedState.records,
+              evidenceState.records,
+            ),
           };
         }
         const eligible = eligibleReviewItems(
@@ -323,75 +452,19 @@ export function createReviewSessionStore(
         });
         return {
           status: 'started' as const,
-          session: sessionView(session, approvedState.records),
+          session: sessionView(
+            session,
+            approvedState.records,
+            evidenceState.records,
+          ),
         };
       });
     },
 
-    reveal(sessionId) {
+    answer(sessionId, rawInput) {
       return serialized(async () => {
-        const [approvedState, sessionState] = await loadSessionRecords(storage);
-        const session = requireActiveSession(sessionState.records, sessionId);
-        const reviewItemId = session.reviewItemIds[session.currentIndex];
-        if (reviewItemId === undefined) {
-          throw new Error('Review Session has no current Review Item.');
-        }
-        const next = session.revealedReviewItemIds.includes(reviewItemId)
-          ? session
-          : sessionSchema.parse({
-              ...session,
-              revealedReviewItemIds: [
-                ...session.revealedReviewItemIds,
-                reviewItemId,
-              ],
-            });
-        if (next !== session) {
-          await saveSession(storage, sessionState.records, next);
-        }
-        return {
-          status: 'revealed' as const,
-          session: sessionView(next, approvedState.records),
-        };
-      });
-    },
-
-    advance(sessionId) {
-      return serialized(async () => {
-        const [approvedState, sessionState] = await loadSessionRecords(storage);
-        const session = requireActiveSession(sessionState.records, sessionId);
-        const reviewItemId = session.reviewItemIds[session.currentIndex];
-        if (
-          reviewItemId === undefined ||
-          !session.revealedReviewItemIds.includes(reviewItemId)
-        ) {
-          throw new Error('Reveal the current Review Item before advancing.');
-        }
-        const isComplete =
-          session.currentIndex === session.reviewItemIds.length - 1;
-        const next = sessionSchema.parse(
-          isComplete
-            ? {
-                ...session,
-                status: 'completed',
-                completedAt: now(),
-              }
-            : {
-                ...session,
-                currentIndex: session.currentIndex + 1,
-              },
-        );
-        await saveSession(storage, sessionState.records, next);
-        return {
-          status: next.status,
-          session: sessionView(next, approvedState.records),
-        };
-      });
-    },
-
-    snapshot(learningItems) {
-      return serialized(async () => {
-        const parsedLearningItems = z.array(learningItemSchema).parse(learningItems);
-        const [approvedState, scheduleState, sessionState, markers] =
+        const input = answerInputSchema.parse(rawInput);
+        const [approvedState, scheduleState, sessionState, evidenceState] =
           await Promise.all([
             loadState(
               storage,
@@ -410,6 +483,205 @@ export function createReviewSessionStore(
               REVIEW_SESSIONS_STORAGE_KEY,
               sessionStateSchema,
               emptySessionState,
+            ),
+            loadState(
+              storage,
+              REVIEW_EVIDENCE_STORAGE_KEY,
+              evidenceStateSchema,
+              emptyEvidenceState,
+            ),
+          ]);
+        const session = requireActiveSession(sessionState.records, sessionId);
+        const reviewItemId = session.reviewItemIds[session.currentIndex];
+        const item = approvedState.records.find(
+          (candidate) => candidate.id === reviewItemId,
+        );
+        if (reviewItemId === undefined || item === undefined) {
+          throw new Error('Review Session has no current approved Review Item.');
+        }
+        const existingEvidence = evidenceState.records.find(
+          (record) =>
+            record.sessionId === session.id && record.reviewItemId === reviewItemId,
+        );
+        if (existingEvidence !== undefined) {
+          throw new Error('The current Review Item already has Review Evidence.');
+        }
+        const scheduleIndex = scheduleState.records.findIndex(
+          (candidate) => scheduleIdentity(candidate) === scheduleIdentity(item),
+        );
+        const schedule = scheduleState.records[scheduleIndex];
+        if (schedule === undefined) {
+          throw new Error('Review Item has no Review Schedule.');
+        }
+        const history = evidenceState.records.filter(
+          (record) =>
+            record.learningItemId === item.learningItemId &&
+            record.knowledgeDimension === item.knowledgeDimension,
+        );
+        const attemptKind = calibrationFor(history).nextAttempt;
+        if (attemptKind === 'objective' && input.responseText === undefined) {
+          throw new Error('An objective Review attempt requires an overt response.');
+        }
+        const evidenceId = id();
+        if (
+          evidenceState.records.some((record) => record.id === evidenceId)
+        ) {
+          throw new Error(`Review Evidence ${evidenceId} already exists.`);
+        }
+        const recordedAt = now();
+        const judgment =
+          attemptKind === 'objective'
+            ? reviewJudgmentSchema.parse(
+                await evaluator.evaluate({
+                  item,
+                  responseText: input.responseText!,
+                }),
+              )
+            : undefined;
+        const evidence = reviewEvidenceSchema.parse({
+          version: 1,
+          id: evidenceId,
+          learningItemId: item.learningItemId,
+          reviewItemId: item.id,
+          sessionId: session.id,
+          knowledgeDimension: item.knowledgeDimension,
+          recordedAt,
+          kind: attemptKind,
+          responseMethod:
+            attemptKind === 'objective' ? 'overt-response' : 'covert-recall',
+          retrievalFluency: input.retrievalFluency,
+          ...(attemptKind === 'objective'
+            ? { responseText: input.responseText, judgment }
+            : {}),
+        });
+        const scheduleTransition = transitionReviewSchedule(
+          schedule,
+          evidence.kind === 'objective'
+            ? { kind: 'objective', judgment: evidence.judgment }
+            : {
+                kind: 'self-assessed',
+                retrievalFluency: evidence.retrievalFluency,
+              },
+          recordedAt,
+        );
+        const recordedEvidence = recordedEvidenceSchema.parse({
+          ...evidence,
+          scheduleTransition,
+        });
+        const nextSession = sessionSchema.parse({
+          ...session,
+          revealedReviewItemIds: session.revealedReviewItemIds.includes(
+            reviewItemId,
+          )
+            ? session.revealedReviewItemIds
+            : [...session.revealedReviewItemIds, reviewItemId],
+        });
+        const nextEvidence = [...evidenceState.records, recordedEvidence];
+        const nextSchedules = scheduleState.records.map((record, index) =>
+          index === scheduleIndex
+            ? scheduleSchema.parse({
+                ...record,
+                ...scheduleTransition.next,
+              })
+            : record,
+        );
+        await storage.set({
+          [REVIEW_EVIDENCE_STORAGE_KEY]: {
+            version: 1,
+            records: nextEvidence,
+          },
+          [REVIEW_SCHEDULES_STORAGE_KEY]: {
+            version: 1,
+            records: nextSchedules,
+          },
+          [REVIEW_SESSIONS_STORAGE_KEY]: {
+            version: 1,
+            records: sessionState.records.map((record) =>
+              record.id === nextSession.id ? nextSession : record,
+            ),
+          },
+        });
+        return {
+          status: 'revealed' as const,
+          session: sessionView(
+            nextSession,
+            approvedState.records,
+            nextEvidence,
+          ),
+        };
+      });
+    },
+
+    advance(sessionId) {
+      return serialized(async () => {
+        const [approvedState, sessionState, evidenceState] =
+          await loadSessionRecords(storage);
+        const session = requireActiveSession(sessionState.records, sessionId);
+        const reviewItemId = session.reviewItemIds[session.currentIndex];
+        const hasEvidence = evidenceState.records.some(
+          (record) =>
+            record.sessionId === session.id &&
+            record.reviewItemId === reviewItemId,
+        );
+        if (reviewItemId === undefined || !hasEvidence) {
+          throw new Error(
+            'Record Review Evidence for the current Review Item before advancing.',
+          );
+        }
+        const isComplete =
+          session.currentIndex === session.reviewItemIds.length - 1;
+        const next = sessionSchema.parse(
+          isComplete
+            ? {
+                ...session,
+                status: 'completed',
+                completedAt: now(),
+              }
+            : {
+                ...session,
+                currentIndex: session.currentIndex + 1,
+              },
+        );
+        await saveSession(storage, sessionState.records, next);
+        return {
+          status: next.status,
+          session: sessionView(
+            next,
+            approvedState.records,
+            evidenceState.records,
+          ),
+        };
+      });
+    },
+
+    snapshot(learningItems) {
+      return serialized(async () => {
+        const parsedLearningItems = z.array(learningItemSchema).parse(learningItems);
+        const [approvedState, scheduleState, sessionState, evidenceState, markers] =
+          await Promise.all([
+            loadState(
+              storage,
+              APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+              approvedStateSchema,
+              emptyApprovedState,
+            ) as Promise<{ version: 1; records: ApprovedReviewItem[] }>,
+            loadState(
+              storage,
+              REVIEW_SCHEDULES_STORAGE_KEY,
+              scheduleStateSchema,
+              emptyScheduleState,
+            ),
+            loadState(
+              storage,
+              REVIEW_SESSIONS_STORAGE_KEY,
+              sessionStateSchema,
+              emptySessionState,
+            ),
+            loadState(
+              storage,
+              REVIEW_EVIDENCE_STORAGE_KEY,
+              evidenceStateSchema,
+              emptyEvidenceState,
             ),
             loadOptionalState(
               storage,
@@ -431,8 +703,13 @@ export function createReviewSessionStore(
           activeSession:
             activeSession === undefined
               ? null
-              : sessionView(activeSession, approvedState.records),
+              : sessionView(
+                  activeSession,
+                  approvedState.records,
+                  evidenceState.records,
+                ),
           schedules: scheduleState.records,
+          evidence: evidenceState.records,
         };
       });
     },
@@ -449,6 +726,7 @@ function scheduleIdentity(value: {
 function sessionView(
   session: ReviewSessionRecord,
   approvedItems: readonly ApprovedReviewItem[],
+  evidenceRecords: readonly RecordedReviewEvidence[],
 ): ReviewSessionView {
   const reviewItemId =
     session.status === 'completed'
@@ -461,8 +739,22 @@ function sessionView(
   if (reviewItemId !== undefined && item === undefined) {
     throw new Error(`Review Session references missing Review Item ${reviewItemId}.`);
   }
-  const revealed =
-    item !== undefined && session.revealedReviewItemIds.includes(item.id);
+  const evidence =
+    item === undefined
+      ? undefined
+      : evidenceRecords.find(
+          (record) =>
+            record.sessionId === session.id && record.reviewItemId === item.id,
+        );
+  const history =
+    item === undefined
+      ? []
+      : evidenceRecords.filter(
+          (record) =>
+            record.learningItemId === item.learningItemId &&
+            record.knowledgeDimension === item.knowledgeDimension &&
+            record !== evidence,
+        );
   const baseCurrent =
     item === undefined
       ? null
@@ -473,6 +765,7 @@ function sessionView(
           taskType: item.task.type,
           prompt: item.task.prompt,
           contextQuote: item.task.contextQuote,
+          attemptKind: evidence?.kind ?? calibrationFor(history).nextAttempt,
         };
   return {
     id: session.id,
@@ -484,16 +777,21 @@ function sessionView(
     current:
       baseCurrent === null
         ? null
-        : revealed
+        : evidence !== undefined
           ? {
               ...baseCurrent,
               revealed: true,
-              acceptedAnswers: [...item.task.acceptedAnswers],
+              targetAnswers: [...item!.task.targetAnswers],
+              acceptableAlternativeAnswers: [
+                ...item!.task.acceptableAlternativeAnswers,
+              ],
+              partialAnswers: [...item!.task.partialAnswers],
               distractors:
-                item.task.type === 'contrastive'
-                  ? [...item.task.distractors]
+                item!.task.type === 'contrastive'
+                  ? [...item!.task.distractors]
                   : [],
-              correctiveExplanation: item.task.correctiveExplanation,
+              correctiveExplanation: item!.task.correctiveExplanation,
+              evidence,
             }
           : { ...baseCurrent, revealed: false },
   };
@@ -603,6 +901,7 @@ async function loadSessionRecords(
   [
     { version: 1; records: ApprovedReviewItem[] },
     z.infer<typeof sessionStateSchema>,
+    z.infer<typeof evidenceStateSchema>,
   ]
 > {
   return Promise.all([
@@ -617,6 +916,12 @@ async function loadSessionRecords(
       REVIEW_SESSIONS_STORAGE_KEY,
       sessionStateSchema,
       emptySessionState,
+    ),
+    loadState(
+      storage,
+      REVIEW_EVIDENCE_STORAGE_KEY,
+      evidenceStateSchema,
+      emptyEvidenceState,
     ),
   ]);
 }
@@ -649,3 +954,39 @@ async function saveSession(
     },
   });
 }
+
+const deterministicReviewEvaluator: ReviewResponseEvaluator = {
+  async evaluate({ item, responseText }): Promise<ReviewJudgment> {
+    const response = normalizeReviewAnswer(responseText);
+    if (
+      item.task.targetAnswers.some(
+        (accepted) => normalizeReviewAnswer(accepted) === response,
+      )
+    ) {
+      return 'demonstrated';
+    }
+    if (
+      item.task.acceptableAlternativeAnswers.some(
+        (alternative) => normalizeReviewAnswer(alternative) === response,
+      )
+    ) {
+      return 'acceptable-alternative';
+    }
+    if (
+      item.task.partialAnswers.some(
+        (partial) => normalizeReviewAnswer(partial) === response,
+      )
+    ) {
+      return 'partial';
+    }
+    if (
+      item.task.type === 'contrastive' &&
+      item.task.distractors.some(
+        (distractor) => normalizeReviewAnswer(distractor) === response,
+      )
+    ) {
+      return 'not-demonstrated';
+    }
+    return 'unable-to-grade';
+  },
+};

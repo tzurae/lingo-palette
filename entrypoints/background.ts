@@ -443,7 +443,7 @@ function registerBackgroundListeners(): void {
       if (
         message.type === 'get-review-session' ||
         message.type === 'start-review-session' ||
-        message.type === 'reveal-review-item' ||
+        message.type === 'answer-review-item' ||
         message.type === 'advance-review-session'
       ) {
         return handleReviewRequest(message, sender);
@@ -1057,8 +1057,13 @@ async function handleReviewRequest(
     if (message.type === 'start-review-session') {
       return reviewSessionStore.start(learningItems);
     }
-    if (message.type === 'reveal-review-item') {
-      return reviewSessionStore.reveal(message.sessionId);
+    if (message.type === 'answer-review-item') {
+      return reviewSessionStore.answer(message.sessionId, {
+        retrievalFluency: message.retrievalFluency,
+        ...(message.responseText === undefined
+          ? {}
+          : { responseText: message.responseText }),
+      });
     }
     return reviewSessionStore.advance(message.sessionId);
   } catch (error) {

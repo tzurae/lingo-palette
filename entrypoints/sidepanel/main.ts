@@ -15,8 +15,13 @@ import type {
   ReviewResponse,
   ReviewSessionSnapshot,
 } from '../../src/modules/review/messages';
+import type {
+  RetrievalFluency,
+  ReviewJudgment,
+} from '../../src/modules/review/review-evidence';
 import {
   APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+  REVIEW_EVIDENCE_STORAGE_KEY,
   REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
   REVIEW_SCHEDULES_STORAGE_KEY,
   REVIEW_SESSIONS_STORAGE_KEY,
@@ -85,6 +90,7 @@ browser.storage.onChanged.addListener((changes, areaName) => {
   }
   if (
     changes[APPROVED_REVIEW_ITEMS_STORAGE_KEY] !== undefined ||
+    changes[REVIEW_EVIDENCE_STORAGE_KEY] !== undefined ||
     changes[REVIEW_REVALIDATION_MARKERS_STORAGE_KEY] !== undefined ||
     changes[REVIEW_SCHEDULES_STORAGE_KEY] !== undefined ||
     changes[REVIEW_SESSIONS_STORAGE_KEY] !== undefined
@@ -200,7 +206,11 @@ function renderReviewSnapshot(
     void performReviewRequest({ type: 'start-review-session' }),
   );
   summary.append(start);
-  reviewContent.append(summary, renderReviewSchedules(snapshot));
+  reviewContent.append(
+    summary,
+    renderReviewSchedules(snapshot),
+    renderReviewEvidence(snapshot),
+  );
   if (!reviewPanel.hidden) {
     announce(
       snapshot.eligibleCount === 0
@@ -243,6 +253,68 @@ function renderReviewSchedules(snapshot: ReviewSessionSnapshot): HTMLElement {
   return details;
 }
 
+function renderReviewEvidence(snapshot: ReviewSessionSnapshot): HTMLElement {
+  const details = element('details');
+  details.className = 'review-evidence';
+  details.append(element('summary', `Review Evidence（${snapshot.evidence.length}）`));
+  if (snapshot.evidence.length === 0) {
+    details.append(element('p', '尚未記錄任何 Review Evidence。'));
+    return details;
+  }
+  const list = element('ol');
+  for (let index = snapshot.evidence.length - 1; index >= 0; index -= 1) {
+    const evidence = snapshot.evidence[index]!;
+    const item = element('li');
+    const record = element('article');
+    record.className = 'review-evidence-record';
+    record.append(
+      element(
+        'strong',
+        evidence.kind === 'objective' ? '客觀 Review Evidence' : '自我評估 Review Evidence',
+      ),
+      labelledText('Knowledge dimension', evidence.knowledgeDimension),
+      labelledText(
+        'Retrieval Fluency',
+        retrievalFluencyLabel(evidence.retrievalFluency),
+      ),
+      labelledText(
+        'Recorded',
+        new Date(evidence.recordedAt).toLocaleString('zh-TW'),
+      ),
+    );
+    if (evidence.kind === 'objective') {
+      record.append(
+        labelledText('Overt response', evidence.responseText),
+        labelledText('Review Judgment', reviewJudgmentLabel(evidence.judgment)),
+      );
+    }
+    record.append(
+      labelledText(
+        'Schedule transition',
+        `stage ${evidence.scheduleTransition.previous.intervalStage} → ${evidence.scheduleTransition.next.intervalStage}`,
+      ),
+      labelledText(
+        'Demonstrated count',
+        `${evidence.scheduleTransition.previous.demonstratedCount} → ${evidence.scheduleTransition.next.demonstratedCount}`,
+      ),
+      labelledText(
+        'Previous due',
+        new Date(
+          evidence.scheduleTransition.previous.dueAt,
+        ).toLocaleString('zh-TW'),
+      ),
+      labelledText(
+        'Next due',
+        new Date(evidence.scheduleTransition.next.dueAt).toLocaleString('zh-TW'),
+      ),
+    );
+    item.append(record);
+    list.append(item);
+  }
+  details.append(list);
+  return details;
+}
+
 function renderReviewSession(
   session: ReviewSessionView,
   forceRestoreFocus = false,
@@ -273,29 +345,102 @@ function renderReviewSession(
   }
   card.append(
     labelledText('Knowledge dimension', current.knowledgeDimension),
+    labelledText(
+      'Review mode',
+      current.attemptKind === 'objective' ? '客觀校準' : '自我評估',
+    ),
     element('h3', current.prompt),
     element('p', current.contextQuote, 'context-quote'),
   );
   const actions = element('div');
   actions.className = 'actions';
   if (!current.revealed) {
-    const reveal = element('button', '顯示答案');
-    reveal.addEventListener('click', () =>
-      void performReviewRequest({
-        type: 'reveal-review-item',
-        sessionId: session.id,
-      }),
+    card.append(
+      element(
+        'p',
+        current.attemptKind === 'objective'
+          ? '請先回想、輸入你的答案，再選擇最符合剛才回想狀態的 Retrieval Fluency。'
+          : '請先在心中回想，再選擇最符合剛才回想狀態的 Retrieval Fluency。',
+      ),
     );
-    actions.append(reveal);
+    let responseInput: HTMLTextAreaElement | null = null;
+    if (current.attemptKind === 'objective') {
+      const responseLabel = element('label', '你的答案');
+      responseLabel.htmlFor = 'review-response';
+      responseInput = document.createElement('textarea');
+      responseInput.id = 'review-response';
+      responseInput.name = 'review-response';
+      responseInput.rows = 3;
+      responseInput.maxLength = 4_000;
+      responseInput.required = true;
+      card.append(responseLabel, responseInput);
+    }
+    const fluencyHeading = element('h3', 'Retrieval Fluency');
+    const fluencyActions = element('div');
+    fluencyActions.className = 'actions review-fluency-actions';
+    const choices = [
+      ['did-not-recall', '沒有想起來'],
+      ['recalled-with-effort', '想起來但有點費力'],
+      ['recalled-fluently', '很流暢地想起來'],
+    ] as const;
+    for (const [retrievalFluency, label] of choices) {
+      const choice = element('button', label);
+      choice.addEventListener('click', () => {
+        const responseText = responseInput?.value.trim();
+        if (responseInput !== null && !responseText) {
+          announce('客觀校準需要先輸入答案。');
+          responseInput.focus();
+          return;
+        }
+        void performReviewRequest({
+          type: 'answer-review-item',
+          sessionId: session.id,
+          retrievalFluency,
+          ...(responseText === undefined ? {} : { responseText }),
+        });
+      });
+      fluencyActions.append(choice);
+    }
+    card.append(fluencyHeading, fluencyActions);
   } else {
     const answer = element('section');
     answer.className = 'review-answer';
-    answer.append(element('h3', '可接受答案'));
-    const accepted = element('ul');
-    for (const value of current.acceptedAnswers) {
-      accepted.append(element('li', value));
+    answer.append(
+      labelledText(
+        'Retrieval Fluency',
+        retrievalFluencyLabel(current.evidence.retrievalFluency),
+      ),
+    );
+    if (current.evidence.kind === 'objective') {
+      answer.append(
+        labelledText(
+          'Review Judgment',
+          reviewJudgmentLabel(current.evidence.judgment),
+        ),
+      );
     }
-    answer.append(accepted);
+    answer.append(element('h3', '目標答案'));
+    const targets = element('ul');
+    for (const value of current.targetAnswers) {
+      targets.append(element('li', value));
+    }
+    answer.append(targets);
+    if (current.acceptableAlternativeAnswers.length > 0) {
+      answer.append(element('h3', '可接受的替代答案'));
+      const alternatives = element('ul');
+      for (const value of current.acceptableAlternativeAnswers) {
+        alternatives.append(element('li', value));
+      }
+      answer.append(alternatives);
+    }
+    if (current.partialAnswers.length > 0) {
+      answer.append(element('h3', '部分答案'));
+      const partials = element('ul');
+      for (const value of current.partialAnswers) {
+        partials.append(element('li', value));
+      }
+      answer.append(partials);
+    }
     if (current.distractors.length > 0) {
       answer.append(element('h3', '需避開的答案'));
       const distractors = element('ul');
@@ -304,9 +449,7 @@ function renderReviewSession(
       }
       answer.append(distractors);
     }
-    answer.append(
-      labelledText('說明', current.correctiveExplanation),
-    );
+    answer.append(labelledText('說明', current.correctiveExplanation));
     card.append(answer);
     const advance = element(
       'button',
@@ -325,8 +468,8 @@ function renderReviewSession(
   if (!reviewPanel.hidden) {
     announce(
       current.revealed
-        ? `第 ${session.position} 題答案已顯示。`
-        : `第 ${session.position} 題，請先嘗試回想再顯示答案。`,
+        ? `第 ${session.position} 題結果已顯示。`
+        : `第 ${session.position} 題，請先回想再記錄 Retrieval Fluency。`,
     );
   }
   restoreReviewFocus(restoreFocus);
@@ -420,9 +563,9 @@ function setReviewBusy(busy: boolean): void {
 
 function restoreReviewFocus(restore: boolean): void {
   if (!restore) return;
-  const nextAction = reviewContent.querySelector<HTMLButtonElement>(
-    'button:not(:disabled)',
-  );
+  const nextAction = reviewContent.querySelector<
+    HTMLTextAreaElement | HTMLButtonElement
+  >('textarea:not(:disabled), button:not(:disabled)');
   if (nextAction !== null) {
     nextAction.focus({ preventScroll: true });
     return;
@@ -1061,6 +1204,20 @@ function labelledText(
   if (className !== undefined) paragraph.className = className;
   paragraph.append(element('strong', `${label}: `), document.createTextNode(text));
   return paragraph;
+}
+
+function retrievalFluencyLabel(value: RetrievalFluency): string {
+  if (value === 'did-not-recall') return '沒有想起來';
+  if (value === 'recalled-with-effort') return '想起來但有點費力';
+  return '很流暢地想起來';
+}
+
+function reviewJudgmentLabel(value: ReviewJudgment): string {
+  if (value === 'demonstrated') return '已展現';
+  if (value === 'acceptable-alternative') return '可接受的替代答案';
+  if (value === 'partial') return '部分展現';
+  if (value === 'not-demonstrated') return '未展現';
+  return '無法評分';
 }
 
 function statusAnnouncement(state: DeepDiveState): string {

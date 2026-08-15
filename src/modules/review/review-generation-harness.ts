@@ -13,6 +13,7 @@ import {
   type Selection,
 } from '../reading-flow/selection';
 import { selectionSchema } from '../reading-flow/selection-parser';
+import { normalizeReviewAnswer } from './review-evidence';
 
 const boundedText = (limit: number) =>
   z
@@ -63,6 +64,7 @@ const evaluationSchema = z
     distractorSafety: criterionSchema,
     correctiveExplanation: criterionSchema,
     validAlternativeAnswers: z.array(reviewText).max(12),
+    partialAnswers: z.array(reviewText).max(12),
     evidenceAssessments: z
       .array(
         z
@@ -119,7 +121,9 @@ export type ApprovedReviewTask =
       type: 'contrastive';
       prompt: string;
       contextQuote: string;
-      acceptedAnswers: string[];
+      targetAnswers: string[];
+      acceptableAlternativeAnswers: string[];
+      partialAnswers: string[];
       distractors: string[];
       correctiveExplanation: string;
     }
@@ -127,7 +131,9 @@ export type ApprovedReviewTask =
       type: 'recall';
       prompt: string;
       contextQuote: string;
-      acceptedAnswers: string[];
+      targetAnswers: string[];
+      acceptableAlternativeAnswers: string[];
+      partialAnswers: string[];
       correctiveExplanation: string;
     };
 
@@ -304,11 +310,22 @@ export function createReviewGenerationHarness(dependencies: {
         return { status: 'rejected', reason: 'evidence-unavailable' };
       }
 
-      const acceptedAnswers = uniqueText([
-        ...candidate.acceptedAnswers,
-        ...evaluation.data.validAlternativeAnswers,
+      const targetAnswers = uniqueText(candidate.acceptedAnswers);
+      const targetKeys = new Set(targetAnswers.map(normalizedText));
+      const acceptableAlternativeAnswers = uniqueText(
+        evaluation.data.validAlternativeAnswers,
+      ).filter((answer) => !targetKeys.has(normalizedText(answer)));
+      const acceptedKeys = new Set([
+        ...targetKeys,
+        ...acceptableAlternativeAnswers.map(normalizedText),
       ]);
-      const answerKeys = new Set(acceptedAnswers.map(normalizedText));
+      const partialAnswers = uniqueText(
+        evaluation.data.partialAnswers,
+      ).filter((answer) => !acceptedKeys.has(normalizedText(answer)));
+      const answerKeys = new Set([
+        ...acceptedKeys,
+        ...partialAnswers.map(normalizedText),
+      ]);
       const hiddenValidAlternative = candidate.distractors.some((distractor) =>
         answerKeys.has(normalizedText(distractor)),
       );
@@ -324,7 +341,9 @@ export function createReviewGenerationHarness(dependencies: {
               type: 'contrastive',
               prompt: candidate.prompt,
               contextQuote: candidate.contextQuote,
-              acceptedAnswers,
+              targetAnswers,
+              acceptableAlternativeAnswers,
+              partialAnswers,
               distractors: uniqueText(candidate.distractors),
               correctiveExplanation: candidate.correctiveExplanation,
             }
@@ -332,7 +351,9 @@ export function createReviewGenerationHarness(dependencies: {
               type: 'recall',
               prompt: `What does “${learningItem.expression}” mean in this context?`,
               contextQuote: candidate.contextQuote,
-              acceptedAnswers,
+              targetAnswers,
+              acceptableAlternativeAnswers,
+              partialAnswers,
               correctiveExplanation: `Here, “${learningItem.expression}” means “${fallbackEvidence.definition}”.`,
             };
 
@@ -403,7 +424,7 @@ function contextQuoteSpansSelection(
 }
 
 function normalizedText(value: string): string {
-  return value.normalize('NFKC').trim().toLocaleLowerCase('en');
+  return normalizeReviewAnswer(value);
 }
 
 function sameEvidencePackManifest(
