@@ -12,6 +12,11 @@ import type {
   LearningRequest,
   LearningResponse,
 } from '../src/modules/learning/messages';
+import type {
+  ReviewRequest,
+  ReviewResponse,
+} from '../src/modules/review/messages';
+import { createReviewSessionStore } from '../src/modules/review/review-session-store';
 import { z } from 'zod';
 import {
   createBrowserApprovedReviewRevalidationPort,
@@ -101,6 +106,7 @@ const learningItemStore = createLearningItemStore(
   browser.storage.local,
   createStoredEligibleSenseLookup(browser.storage.local),
 );
+const reviewSessionStore = createReviewSessionStore(browser.storage.local);
 const speechCache = createSpeechCache(browser.storage.local);
 const openAiSpeechClient = createOpenAiSpeechClient(
   import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,
@@ -370,7 +376,8 @@ function registerBackgroundListeners(): void {
         | ReadingFlowRequest
         | OpenAiSettingsRequest
         | LearningRequest
-        | EvidencePackRequest,
+        | EvidencePackRequest
+        | ReviewRequest,
       sender,
     ):
       | Promise<
@@ -382,6 +389,7 @@ function registerBackgroundListeners(): void {
           | PronunciationAudioResponse
           | LearningResponse
           | EvidencePackResponse
+          | ReviewResponse
         >
       | undefined => {
       if (message.type === 'site-status') {
@@ -431,6 +439,14 @@ function registerBackgroundListeners(): void {
         message.type === 'set-productive-use-intent'
       ) {
         return handleLearningRequest(message, sender);
+      }
+      if (
+        message.type === 'get-review-session' ||
+        message.type === 'start-review-session' ||
+        message.type === 'reveal-review-item' ||
+        message.type === 'advance-review-session'
+      ) {
+        return handleReviewRequest(message, sender);
       }
       if (
         message.type === 'get-evidence-pack-status' ||
@@ -1015,6 +1031,41 @@ async function handleLearningRequest(
       status: 'failed',
       message:
         error instanceof Error ? error.message : '無法更新 Saved Learning Items。',
+    };
+  }
+}
+
+async function handleReviewRequest(
+  message: ReviewRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<ReviewResponse> {
+  if (!isTrustedExtensionSender(sender)) {
+    return {
+      status: 'failed',
+      message: '只有 Lingo Palette extension 頁面可以操作 Review Session。',
+    };
+  }
+  await backgroundInitialization;
+  try {
+    const learningItems = (await learningItemStore.load()).learningItems;
+    if (message.type === 'get-review-session') {
+      return {
+        status: 'loaded',
+        snapshot: await reviewSessionStore.snapshot(learningItems),
+      };
+    }
+    if (message.type === 'start-review-session') {
+      return reviewSessionStore.start(learningItems);
+    }
+    if (message.type === 'reveal-review-item') {
+      return reviewSessionStore.reveal(message.sessionId);
+    }
+    return reviewSessionStore.advance(message.sessionId);
+  } catch (error) {
+    return {
+      status: 'failed',
+      message:
+        error instanceof Error ? error.message : '無法更新 Review Session。',
     };
   }
 }

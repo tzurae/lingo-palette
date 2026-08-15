@@ -10,6 +10,18 @@ import type {
   LearningRequest,
   LearningResponse,
 } from '../../src/modules/learning/messages';
+import type {
+  ReviewRequest,
+  ReviewResponse,
+  ReviewSessionSnapshot,
+} from '../../src/modules/review/messages';
+import {
+  APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+  REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+  REVIEW_SCHEDULES_STORAGE_KEY,
+  REVIEW_SESSIONS_STORAGE_KEY,
+} from '../../src/modules/review/review-storage-keys';
+import type { ReviewSessionView } from '../../src/modules/review/review-session-store';
 import {
   LOOKUP_RECORDS_STORAGE_KEY,
   type LookupRecord,
@@ -36,9 +48,13 @@ const recentContent = requiredElement<HTMLElement>('#recent-content');
 const savedPanel = requiredElement<HTMLElement>('#saved-panel');
 const savedContent = requiredElement<HTMLElement>('#saved-content');
 const savedError = requiredElement<HTMLElement>('#saved-error');
+const reviewPanel = requiredElement<HTMLElement>('#review-panel');
+const reviewContent = requiredElement<HTMLElement>('#review-content');
+const reviewError = requiredElement<HTMLElement>('#review-error');
 const liveStatus = requiredElement<HTMLElement>('#live-status');
 let recentRecords: LookupRecord[] = [];
 let learningState: LearningState | null = null;
+let reviewActionInProgress = false;
 
 for (const tab of tabs) {
   tab.addEventListener('click', () => activateTab(tab));
@@ -67,10 +83,19 @@ browser.storage.onChanged.addListener((changes, areaName) => {
   if (changes[LEARNING_STATE_STORAGE_KEY] !== undefined) {
     void loadSaved();
   }
+  if (
+    changes[APPROVED_REVIEW_ITEMS_STORAGE_KEY] !== undefined ||
+    changes[REVIEW_REVALIDATION_MARKERS_STORAGE_KEY] !== undefined ||
+    changes[REVIEW_SCHEDULES_STORAGE_KEY] !== undefined ||
+    changes[REVIEW_SESSIONS_STORAGE_KEY] !== undefined
+  ) {
+    if (!reviewActionInProgress) void loadReview();
+  }
 });
 void loadState();
 void loadRecent();
 void loadSaved();
+void loadReview();
 
 async function loadState(): Promise<void> {
   try {
@@ -122,6 +147,287 @@ async function loadSaved(): Promise<void> {
   } catch {
     renderSavedError('無法讀取 Saved Learning Items。');
   }
+}
+
+async function loadReview(): Promise<void> {
+  try {
+    const response = (await browser.runtime.sendMessage({
+      type: 'get-review-session',
+    } satisfies ReviewRequest)) as ReviewResponse;
+    if (response.status !== 'loaded') {
+      renderReviewError(
+        response.status === 'failed'
+          ? response.message
+          : '無法讀取 Review Session。',
+      );
+      return;
+    }
+    renderReviewSnapshot(response.snapshot);
+  } catch {
+    renderReviewError('無法讀取 Review Session。');
+  }
+}
+
+function renderReviewSnapshot(
+  snapshot: ReviewSessionSnapshot,
+  forceRestoreFocus = false,
+): void {
+  const restoreFocus =
+    forceRestoreFocus || reviewContent.contains(document.activeElement);
+  clearReviewError();
+  if (snapshot.activeSession !== null) {
+    renderReviewSession(snapshot.activeSession, restoreFocus);
+    return;
+  }
+  reviewContent.replaceChildren(element('h2', 'Review'));
+  const summary = element('section');
+  summary.className = 'review-summary';
+  summary.append(
+    element('h3', '到期 Review Items'),
+    element(
+      'p',
+      snapshot.eligibleCount === 0
+        ? '目前沒有到期且可用的 Review Item。'
+        : `目前有 ${snapshot.eligibleCount} 個 Learning Items 可以複習。`,
+    ),
+  );
+  const start = element(
+    'button',
+    snapshot.eligibleCount === 0 ? '沒有可開始的 Review' : '開始 Review',
+  );
+  start.disabled = snapshot.eligibleCount === 0;
+  start.addEventListener('click', () =>
+    void performReviewRequest({ type: 'start-review-session' }),
+  );
+  summary.append(start);
+  reviewContent.append(summary, renderReviewSchedules(snapshot));
+  if (!reviewPanel.hidden) {
+    announce(
+      snapshot.eligibleCount === 0
+        ? '目前沒有到期的 Review Items。'
+        : `可以開始 ${Math.min(snapshot.eligibleCount, 5)} 題 Review。`,
+    );
+  }
+  restoreReviewFocus(restoreFocus);
+}
+
+function renderReviewSchedules(snapshot: ReviewSessionSnapshot): HTMLElement {
+  const details = element('details');
+  details.className = 'review-schedules';
+  details.append(
+    element('summary', `排程狀態（${snapshot.schedules.length}）`),
+  );
+  if (snapshot.schedules.length === 0) {
+    details.append(element('p', '尚未建立任何知識面向排程。'));
+    return details;
+  }
+  const list = element('ol');
+  for (const schedule of snapshot.schedules) {
+    const item = element('li');
+    const card = element('article');
+    card.className = 'review-schedule';
+    card.append(
+      element('strong', schedule.knowledgeDimension),
+      labelledText('Learning Item ID', schedule.learningItemId),
+      labelledText('Interval stage', String(schedule.intervalStage)),
+      labelledText('Demonstrated count', String(schedule.demonstratedCount)),
+      labelledText(
+        'Due',
+        new Date(schedule.dueAt).toLocaleString('zh-TW'),
+      ),
+    );
+    item.append(card);
+    list.append(item);
+  }
+  details.append(list);
+  return details;
+}
+
+function renderReviewSession(
+  session: ReviewSessionView,
+  forceRestoreFocus = false,
+): void {
+  const restoreFocus =
+    forceRestoreFocus || reviewContent.contains(document.activeElement);
+  clearReviewError();
+  reviewContent.replaceChildren(element('h2', 'Review Session'));
+  const card = element('article');
+  card.className = 'review-card';
+  card.append(
+    element('p', `第 ${session.position} / ${session.total} 題`),
+  );
+  if (session.shortened) {
+    card.append(
+      element(
+        'p',
+        `這是 ${session.total} 題的 shortened session；不會提前拉入尚未到期的項目。`,
+      ),
+    );
+  }
+  const current = session.current;
+  if (current === null) {
+    card.append(element('p', 'Review Session 已完成。'));
+    reviewContent.append(card);
+    restoreReviewFocus(restoreFocus);
+    return;
+  }
+  card.append(
+    labelledText('Knowledge dimension', current.knowledgeDimension),
+    element('h3', current.prompt),
+    element('p', current.contextQuote, 'context-quote'),
+  );
+  const actions = element('div');
+  actions.className = 'actions';
+  if (!current.revealed) {
+    const reveal = element('button', '顯示答案');
+    reveal.addEventListener('click', () =>
+      void performReviewRequest({
+        type: 'reveal-review-item',
+        sessionId: session.id,
+      }),
+    );
+    actions.append(reveal);
+  } else {
+    const answer = element('section');
+    answer.className = 'review-answer';
+    answer.append(element('h3', '可接受答案'));
+    const accepted = element('ul');
+    for (const value of current.acceptedAnswers) {
+      accepted.append(element('li', value));
+    }
+    answer.append(accepted);
+    if (current.distractors.length > 0) {
+      answer.append(element('h3', '需避開的答案'));
+      const distractors = element('ul');
+      for (const value of current.distractors) {
+        distractors.append(element('li', value));
+      }
+      answer.append(distractors);
+    }
+    answer.append(
+      labelledText('說明', current.correctiveExplanation),
+    );
+    card.append(answer);
+    const advance = element(
+      'button',
+      session.position === session.total ? '完成 Review' : '下一題',
+    );
+    advance.addEventListener('click', () =>
+      void performReviewRequest({
+        type: 'advance-review-session',
+        sessionId: session.id,
+      }),
+    );
+    actions.append(advance);
+  }
+  card.append(actions);
+  reviewContent.append(card);
+  if (!reviewPanel.hidden) {
+    announce(
+      current.revealed
+        ? `第 ${session.position} 題答案已顯示。`
+        : `第 ${session.position} 題，請先嘗試回想再顯示答案。`,
+    );
+  }
+  restoreReviewFocus(restoreFocus);
+}
+
+async function performReviewRequest(request: ReviewRequest): Promise<void> {
+  const restoreFocus = reviewContent.contains(document.activeElement);
+  reviewActionInProgress = true;
+  setReviewBusy(true);
+  try {
+    const response = (await browser.runtime.sendMessage(
+      request,
+    )) as ReviewResponse;
+    if (response.status === 'failed') {
+      renderReviewError(response.message);
+      restoreReviewFocus(restoreFocus);
+      return;
+    }
+    if (response.status === 'unavailable') {
+      await loadReview();
+      restoreReviewFocus(restoreFocus);
+      return;
+    }
+    if (
+      response.status === 'started' ||
+      response.status === 'active' ||
+      response.status === 'revealed'
+    ) {
+      renderReviewSession(response.session, restoreFocus);
+      return;
+    }
+    if (response.status === 'completed') {
+      renderReviewCompleted(response.session, restoreFocus);
+      return;
+    }
+    if (response.status === 'loaded') {
+      renderReviewSnapshot(response.snapshot, restoreFocus);
+      return;
+    }
+    restoreReviewFocus(restoreFocus);
+  } catch {
+    renderReviewError('無法更新 Review Session。');
+    restoreReviewFocus(restoreFocus);
+  } finally {
+    reviewActionInProgress = false;
+  }
+}
+
+function renderReviewCompleted(
+  session: ReviewSessionView,
+  forceRestoreFocus = false,
+): void {
+  const restoreFocus =
+    forceRestoreFocus || reviewContent.contains(document.activeElement);
+  clearReviewError();
+  reviewContent.replaceChildren(element('h2', 'Review Session'));
+  const summary = element('section');
+  summary.className = 'review-summary';
+  summary.append(
+    element('h3', '本次 Review 已完成'),
+    element(
+      'p',
+      `已完成 ${session.total} 題${session.shortened ? ' shortened session' : ''}。`,
+    ),
+  );
+  const back = element('button', '返回 Review');
+  back.addEventListener('click', () => void loadReview());
+  summary.append(back);
+  reviewContent.append(summary);
+  announce(`Review Session 已完成，共 ${session.total} 題。`);
+  restoreReviewFocus(restoreFocus);
+}
+
+function renderReviewError(message: string): void {
+  reviewError.textContent = message;
+  reviewError.hidden = false;
+  setReviewBusy(false);
+  announce(message);
+}
+
+function clearReviewError(): void {
+  reviewError.textContent = '';
+  reviewError.hidden = true;
+}
+
+function setReviewBusy(busy: boolean): void {
+  for (const button of reviewContent.querySelectorAll('button')) {
+    button.disabled = busy;
+  }
+}
+
+function restoreReviewFocus(restore: boolean): void {
+  if (!restore) return;
+  const nextAction = reviewContent.querySelector<HTMLButtonElement>(
+    'button:not(:disabled)',
+  );
+  if (nextAction !== null) {
+    nextAction.focus({ preventScroll: true });
+    return;
+  }
+  reviewPanel.focus({ preventScroll: true });
 }
 
 function renderRecent(records: LookupRecord[]): void {

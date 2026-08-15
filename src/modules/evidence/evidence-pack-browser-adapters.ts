@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import {
+  APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+  REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+} from '../review/review-storage-keys';
+import {
   evidencePackAssetUrl,
   EvidencePackLifecycleError,
   type ApprovedReviewRevalidationPort,
@@ -15,9 +19,6 @@ import {
 
 export const EVIDENCE_PACK_STATE_STORAGE_KEY = 'activeEvidencePackV1';
 const EVIDENCE_PACK_CANDIDATE_STORAGE_PREFIX = 'evidencePackCandidateV1:';
-export const APPROVED_REVIEW_ITEMS_STORAGE_KEY = 'approvedReviewItemsV1';
-export const REVIEW_REVALIDATION_MARKERS_STORAGE_KEY =
-  'reviewRevalidationMarkersV1';
 
 const revalidationSweepSchema = z
   .object({

@@ -16,6 +16,7 @@
         <button id="current-tab" role="tab" aria-selected="true" aria-controls="current-panel" tabindex="0">Current</button>
         <button id="recent-tab" role="tab" aria-selected="false" aria-controls="recent-panel" tabindex="-1">Recent</button>
         <button id="saved-tab" role="tab" aria-selected="false" aria-controls="saved-panel" tabindex="-1">Saved</button>
+        <button id="review-tab" role="tab" aria-selected="false" aria-controls="review-panel" tabindex="-1">Review</button>
       </div>
     </nav>
     <main>
@@ -36,6 +37,13 @@
           <p>正在讀取 Learning Items…</p>
         </div>
         <p id="saved-error" class="error" hidden></p>
+      </section>
+      <section id="review-panel" role="tabpanel" aria-labelledby="review-tab" tabindex="0" hidden>
+        <div id="review-content">
+          <h2>Review</h2>
+          <p>正在讀取 Review Session…</p>
+        </div>
+        <p id="review-error" class="error" hidden></p>
       </section>
     </main>
     <p id="live-status" class="visually-hidden" role="status" aria-live="polite"></p>
