@@ -334,8 +334,12 @@ function renderBudgetSettings(settings: OpenAiSettingsSnapshot): void {
     budget.used.estimatedCostUsd === null
       ? '無本機估算'
       : `US$${budget.used.estimatedCostUsd.toFixed(6)}`;
+  const backgroundUsedCost =
+    budget.background.used.estimatedCostUsd === null
+      ? '無本機估算'
+      : `US$${budget.background.used.estimatedCostUsd.toFixed(6)}`;
   budgetUsage.textContent =
-    `本機日期 ${budget.activeDate}：已用 ${budget.used.totalTokens.toLocaleString('en-US')} tokens（input ${budget.used.inputTokens.toLocaleString('en-US')}，cached input ${budget.used.cachedInputTokens.toLocaleString('en-US')}，output ${budget.used.outputTokens.toLocaleString('en-US')}，reasoning ${budget.used.reasoningTokens.toLocaleString('en-US')}）與 ${usedCost}；目前預留 ${budget.reserved.tokens.toLocaleString('en-US')} tokens / US$${budget.reserved.estimatedCostUsd.toFixed(6)}。下次本機重設：${new Date(budget.nextLocalReset).toLocaleString('zh-Hant')}。`;
+    `本機日期 ${budget.activeDate}：已用 ${budget.used.totalTokens.toLocaleString('en-US')} tokens（input ${budget.used.inputTokens.toLocaleString('en-US')}，cached input ${budget.used.cachedInputTokens.toLocaleString('en-US')}，output ${budget.used.outputTokens.toLocaleString('en-US')}，reasoning ${budget.used.reasoningTokens.toLocaleString('en-US')}）與 ${usedCost}；目前預留 ${budget.reserved.tokens.toLocaleString('en-US')} tokens / US$${budget.reserved.estimatedCostUsd.toFixed(6)}。背景 Review Preparation 最多使用每日額度 30%：已用 ${budget.background.used.totalTokens.toLocaleString('en-US')} / ${budget.background.limit.tokens.toLocaleString('en-US')} tokens 與 ${backgroundUsedCost} / US$${budget.background.limit.estimatedCostUsd.toFixed(6)}，另預留 ${budget.background.reserved.tokens.toLocaleString('en-US')} tokens / US$${budget.background.reserved.estimatedCostUsd.toFixed(6)}。下次本機重設：${new Date(budget.nextLocalReset).toLocaleString('zh-Hant')}。`;
   const unavailable = !pricing.estimatedCostBudgetAvailable;
   pricingStatus.textContent = unavailable
     ? `價格 catalog 檢查日：${pricing.checkedDate}。目前模型價格未知；保留 token hard limit，不套用 estimated-cost limit 或估算。`

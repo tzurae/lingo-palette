@@ -146,14 +146,16 @@ const evaluationSchema = z
     }
   });
 
-const reviewGenerationInputSchema = z
+export const reviewGenerationContextSchema = z
   .object({
     learningItem: learningItemSchema,
-    encounters: z.array(encounterSchema).min(1),
+    encounters: z.array(encounterSchema).min(1).max(5),
     generation: generationSchema,
-    candidate: reviewCandidateSchema,
   })
   .strict();
+const reviewGenerationInputSchema = reviewGenerationContextSchema.extend({
+  candidate: reviewCandidateSchema,
+});
 
 export type ContextualMeaningReviewCandidate = z.infer<
   typeof contextualMeaningCandidateSchema
@@ -171,6 +173,19 @@ export type ProductiveUseReviewCandidate = z.infer<
 export type ReviewCandidate = z.infer<typeof reviewCandidateSchema>;
 export type ReviewGenerationPin = z.infer<typeof generationSchema>;
 export type ReviewGenerationInput = z.infer<typeof reviewGenerationInputSchema>;
+export type ReviewGenerationContext = z.infer<
+  typeof reviewGenerationContextSchema
+>;
+
+export function parseReviewCandidate(value: unknown): ReviewCandidate {
+  return reviewCandidateSchema.parse(value);
+}
+
+export function parseControlledEvaluation(
+  value: unknown,
+): ControlledEvaluation {
+  return evaluationSchema.parse(value);
+}
 
 export type ControlledEvaluation = z.infer<typeof evaluationSchema>;
 export type ControlledReviewEvaluator = {

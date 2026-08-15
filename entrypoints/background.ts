@@ -7,7 +7,10 @@ import {
   sanitizeSourceUrl,
 } from '../src/modules/learning/lookup-record';
 import { createStoredEligibleSenseLookup } from '../src/modules/learning/evidence-pack-lookup';
-import { createLearningItemStore } from '../src/modules/learning/learning-item-store';
+import {
+  createLearningItemStore,
+  LEARNING_STATE_STORAGE_KEY,
+} from '../src/modules/learning/learning-item-store';
 import type {
   LearningRequest,
   LearningResponse,
@@ -17,6 +20,17 @@ import type {
   ReviewResponse,
 } from '../src/modules/review/messages';
 import { createReviewSessionStore } from '../src/modules/review/review-session-store';
+import {
+  createReviewGenerationHarness,
+  type ControlledReviewEvaluator,
+} from '../src/modules/review/review-generation-harness';
+import {
+  createReviewPreparationQueue,
+  ReviewPreparationFailure,
+} from '../src/modules/review/review-preparation-queue';
+import { createReviewPreparationWorker } from '../src/modules/review/review-preparation-worker';
+import { planReviewPreparationTargets } from '../src/modules/review/review-preparation-targets';
+import { BUNDLED_ENGLISH_EVIDENCE_PACK } from '../src/modules/evidence/bundled-english-evidence-pack';
 import { z } from 'zod';
 import {
   createBrowserApprovedReviewRevalidationPort,
@@ -58,6 +72,8 @@ import type {
 } from '../src/modules/openai/messages';
 import {
   createOpenAiResponsesClient,
+  reviewCandidateProviderTokenUpperBound,
+  reviewEvaluationProviderTokenUpperBound,
   OpenAiCompatibilityError,
   OpenAiProviderError,
   type CapabilityProbeReport,
@@ -176,6 +192,184 @@ const controlledSpeechRequestSchema = z.object({
 });
 const openAiResponsesClient = createOpenAiResponsesClient(
   import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,
+);
+const reviewReuseHarness = createReviewGenerationHarness({
+  evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK,
+  evaluator: {
+    async evaluate() {
+      throw new Error('Reusability checks do not evaluate candidates.');
+    },
+  },
+  validatorVersion: 'review-validator-v1',
+});
+const reviewPreparationWorker = createReviewPreparationWorker({
+  candidateGenerator: {
+    async generate(job) {
+      const runtime = await requireReviewRuntime(job);
+      try {
+        const response =
+          await openAiResponsesClient.generateReviewCandidate({
+            ...runtime,
+            knowledgeDimension: job.knowledgeDimension,
+            context: job.context,
+          });
+        return {
+          candidate: response.result,
+          usage: providerUsage(
+            runtime.configuration.model.id,
+            response.usage,
+          ),
+        };
+      } catch (error) {
+        throw asReviewPreparationFailure(
+          error,
+          runtime.configuration.model.id,
+        );
+      }
+    },
+  },
+  validator: {
+    async review({ job, input }) {
+      const runtime = await requireReviewRuntime({
+        context: input,
+      });
+      const lifecycle = await evidencePackLifecycle.snapshot();
+      const activeEvidencePackVersion =
+        lifecycle.activeVersion ??
+        BUNDLED_EVIDENCE_PACK_VERSION;
+      if (
+        activeEvidencePackVersion !==
+        BUNDLED_ENGLISH_EVIDENCE_PACK.manifest.version
+      ) {
+        throw new ReviewPreparationFailure(
+          'evidence-pack-version-unavailable',
+          false,
+        );
+      }
+      let evaluationUsage = emptyProviderUsage();
+      let providerFailure: ReviewPreparationFailure | null = null;
+      const evaluator: ControlledReviewEvaluator = {
+        async evaluate(evaluationInput) {
+          try {
+            const response =
+              await openAiResponsesClient.evaluateReviewCandidate({
+                ...runtime,
+                ...evaluationInput,
+              });
+            evaluationUsage = providerUsage(
+              runtime.configuration.model.id,
+              response.usage,
+            );
+            return response.result;
+          } catch (error) {
+            providerFailure = asReviewPreparationFailure(
+              error,
+              runtime.configuration.model.id,
+            );
+            throw providerFailure;
+          }
+        },
+      };
+      const harness = createReviewGenerationHarness({
+        evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK,
+        evaluator,
+        validatorVersion: 'review-validator-v1',
+        id: () => `prepared:${job.id}`,
+        now: () => job.createdAt,
+      });
+      const result = await harness.review(input);
+      if (providerFailure !== null) throw providerFailure;
+      return { result, usage: evaluationUsage };
+    },
+  },
+});
+const reviewPreparationQueue = createReviewPreparationQueue(
+  browser.storage.local,
+  {
+    isOnline: async () =>
+      import.meta.env.WXT_TEST_BROWSER === 'true'
+        ? (await browser.storage.local.get('openAiTestOnline'))
+            .openAiTestOnline !== false
+        : navigator.onLine,
+    async isReusable(item, generation) {
+      const lifecycle = await evidencePackLifecycle.snapshot();
+      const activeEvidencePackVersion =
+        lifecycle.activeVersion ??
+        BUNDLED_EVIDENCE_PACK_VERSION;
+      return (
+        item.provenance.evidencePack.version ===
+          activeEvidencePackVersion &&
+        (await reviewReuseHarness.isReusable(item, generation))
+      );
+    },
+    async excludeStaleApproval(item) {
+      const lifecycle = await evidencePackLifecycle.snapshot();
+      const toEvidencePackVersion =
+        lifecycle.activeVersion ??
+        BUNDLED_EVIDENCE_PACK_VERSION;
+      await approvedReviewRevalidationPort.markRevalidationPending({
+        reviewItemId: item.id,
+        sweepId: `review-preparation:${toEvidencePackVersion}`,
+        fromEvidencePackVersion:
+          item.provenance.evidencePack.version,
+        toEvidencePackVersion,
+      });
+    },
+    async reservation(job) {
+      const settings = await openAiConfigurationStore.loadSettings();
+      const configuration = settings.configuration;
+      const evidence =
+        job.knowledgeDimension === 'usage-fit'
+          ? BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits
+          : job.knowledgeDimension === 'grammar-pattern'
+            ? BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns
+            : job.knowledgeDimension === 'collocation'
+              ? BUNDLED_ENGLISH_EVIDENCE_PACK.collocations
+              : BUNDLED_ENGLISH_EVIDENCE_PACK.contextualMeanings;
+      const candidateTokens = reviewCandidateProviderTokenUpperBound({
+        configuration,
+        knowledgeDimension: job.knowledgeDimension,
+        context: job.context,
+      });
+      const evaluationTokens = Math.max(
+        ...job.context.encounters.map((encounter) =>
+          reviewEvaluationProviderTokenUpperBound({
+            configuration,
+            learningItem: job.context.learningItem,
+            encounter,
+            evidence,
+          }),
+        ),
+      );
+      const outputTokens = 4_096;
+      const totalTokens = candidateTokens + evaluationTokens;
+      const expected = {
+        inputTokens: totalTokens - outputTokens,
+        cachedInputTokens: 0,
+        outputTokens,
+        reasoningTokens: 0,
+        totalTokens,
+      };
+      return {
+        tokens: totalTokens,
+        estimatedCostUsd: estimateOpenAiCost(
+          configuration.model.id,
+          expected,
+        ),
+      };
+    },
+    budget: budgetLedger,
+    worker: reviewPreparationWorker,
+    activation: {
+      async activate({ job, result }) {
+        await reviewSessionStore.activatePrepared({
+          item: result.item,
+          replacedReviewItemId: job.replacedReviewItemId,
+          schedule: result.schedule,
+        });
+      },
+    },
+  },
 );
 const quickHintExecutor = createQuickHintExecutor({
   isOnline: async () =>
@@ -332,6 +526,8 @@ const serializeDeepDiveCacheWrite = createSerialExecutor();
 const serializeDeepDiveLifecycle = createSerialExecutor();
 const serializeOpenAiConfigurationMutation = createSerialExecutor();
 
+const serializeReviewPreparation = createSerialExecutor();
+const reviewPreparationAlarm = 'review-preparation';
 const serializeEvidencePackLifecycle = createSerialExecutor();
 const evidencePackRevalidationAlarm = 'evidence-pack-revalidation';
 const evidencePackRevalidationBatchSize = 25;
@@ -339,6 +535,9 @@ let backgroundInitialization = Promise.resolve();
 
 export default defineBackground(() => {
   backgroundInitialization = initializeBackgroundState();
+  void backgroundInitialization
+    .then(() => continueReviewPreparation())
+    .catch(() => undefined);
   registerBackgroundListeners();
 });
 
@@ -348,6 +547,15 @@ async function initializeBackgroundState(): Promise<void> {
   });
   await deepDiveStateStore.interruptRunning();
   await serializeEvidencePackLifecycle(processEvidencePackRevalidationBatch);
+  await synchronizeReviewPreparation();
+  await armReviewPreparationAlarm();
+}
+
+async function armReviewPreparationAlarm(): Promise<void> {
+  await browser.alarms.create(reviewPreparationAlarm, {
+    delayInMinutes: 1,
+    periodInMinutes: 5,
+  });
 }
 
 function registerBackgroundListeners(): void {
@@ -367,8 +575,20 @@ function registerBackgroundListeners(): void {
   });
 
   browser.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name !== evidencePackRevalidationAlarm) return;
-    void continueEvidencePackRevalidation();
+    if (alarm.name === evidencePackRevalidationAlarm) {
+      void continueEvidencePackRevalidation();
+    } else if (alarm.name === reviewPreparationAlarm) {
+      void continueReviewPreparation();
+    }
+  });
+
+  browser.storage.onChanged.addListener((changes, areaName) => {
+    if (
+      areaName === 'local' &&
+      changes[LEARNING_STATE_STORAGE_KEY] !== undefined
+    ) {
+      void continueReviewPreparation();
+    }
   });
 
   browser.runtime.onMessage.addListener(
@@ -445,7 +665,8 @@ function registerBackgroundListeners(): void {
         message.type === 'get-review-session' ||
         message.type === 'start-review-session' ||
         message.type === 'answer-review-item' ||
-        message.type === 'advance-review-session'
+        message.type === 'advance-review-session' ||
+        message.type === 'resume-review-preparation'
       ) {
         return handleReviewRequest(message, sender);
       }
@@ -1026,6 +1247,8 @@ async function handleLearningRequest(
         message.enabled,
       );
     }
+    await synchronizeReviewPreparation();
+    await armReviewPreparationAlarm();
     return { status: 'loaded', state: await learningItemStore.load() };
   } catch (error) {
     return {
@@ -1052,7 +1275,10 @@ async function handleReviewRequest(
     if (message.type === 'get-review-session') {
       return {
         status: 'loaded',
-        snapshot: await reviewSessionStore.snapshot(learningItems),
+        snapshot: {
+          ...(await reviewSessionStore.snapshot(learningItems)),
+          preparation: await reviewPreparationQueue.snapshot(),
+        },
       };
     }
     if (message.type === 'start-review-session') {
@@ -1065,6 +1291,17 @@ async function handleReviewRequest(
           ? {}
           : { responseText: message.responseText }),
       });
+    }
+    if (message.type === 'resume-review-preparation') {
+      await reviewPreparationQueue.resume(message.jobId);
+      await armReviewPreparationAlarm();
+      return {
+        status: 'loaded',
+        snapshot: {
+          ...(await reviewSessionStore.snapshot(learningItems)),
+          preparation: await reviewPreparationQueue.snapshot(),
+        },
+      };
     }
     return reviewSessionStore.advance(message.sessionId);
   } catch (error) {
@@ -1104,6 +1341,8 @@ async function handleEvidencePackRequest(
           candidateId: message.candidateId,
         });
         void continueEvidencePackRevalidation();
+        await synchronizeReviewPreparation();
+        await armReviewPreparationAlarm();
         return {
           status: 'activated',
           snapshot: await evidencePackSnapshot(),
@@ -1112,6 +1351,8 @@ async function handleEvidencePackRequest(
       if (message.type === 'rollback-evidence-pack') {
         await evidencePackLifecycle.rollback();
         void continueEvidencePackRevalidation();
+        await synchronizeReviewPreparation();
+        await armReviewPreparationAlarm();
         return {
           status: 'rolled-back',
           snapshot: await evidencePackSnapshot(),
@@ -1160,6 +1401,30 @@ async function scheduleEvidencePackRevalidationRetry(): Promise<void> {
 async function continueEvidencePackRevalidation(): Promise<void> {
   await backgroundInitialization;
   await serializeEvidencePackLifecycle(processEvidencePackRevalidationBatch);
+}
+
+async function synchronizeReviewPreparation(): Promise<void> {
+  const [learning, review, settings] = await Promise.all([
+    learningItemStore.load(),
+    reviewSessionStore.preparationSnapshot(),
+    openAiConfigurationStore.loadSettings(),
+  ]);
+  await reviewPreparationQueue.sync(
+    planReviewPreparationTargets({
+      learning,
+      approvedItems: review.approvedItems,
+      schedules: review.schedules,
+      configuration: settings.configuration,
+    }),
+  );
+}
+
+async function continueReviewPreparation(): Promise<void> {
+  await backgroundInitialization;
+  await serializeReviewPreparation(async () => {
+    await synchronizeReviewPreparation();
+    await reviewPreparationQueue.runNext();
+  });
 }
 
 async function evidencePackSnapshot() {
@@ -1308,6 +1573,8 @@ async function handleOpenAiSettings(
     const activated = await serializeOpenAiConfigurationMutation(async () => {
       if (activationVersion !== openAiActivationVersion) return false;
       await openAiConfigurationStore.activate(configuration, message.apiKey);
+      await synchronizeReviewPreparation();
+      await armReviewPreparationAlarm();
       return true;
     });
     if (!activated) {
@@ -1478,6 +1745,77 @@ function providerUsage(model: string, usage: OpenAiUsage): ProviderUsage {
     ...usage,
     estimatedCostUsd: estimateOpenAiCost(model, usage),
   };
+}
+
+function emptyProviderUsage(): ProviderUsage {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    estimatedCostUsd: 0,
+  };
+}
+
+async function requireReviewRuntime(input: {
+  context: {
+    generation: { model: string };
+  };
+}) {
+  const runtime =
+    await openAiConfigurationStore.loadRuntimeConfiguration();
+  if (runtime === null) {
+    throw new ReviewPreparationFailure('provider-disabled', false);
+  }
+  if (
+    runtime.configuration.model.id !== input.context.generation.model
+  ) {
+    throw new ReviewPreparationFailure(
+      'configuration-changed',
+      false,
+    );
+  }
+  return runtime;
+}
+
+function asReviewPreparationFailure(
+  error: unknown,
+  model: string,
+): ReviewPreparationFailure {
+  if (error instanceof ReviewPreparationFailure) return error;
+  if (error instanceof OpenAiProviderError) {
+    return new ReviewPreparationFailure(
+      error.providerKind,
+      error.retryable,
+      {
+        message: error.message,
+        usage:
+          error.usage === undefined
+            ? null
+            : providerUsage(model, error.usage),
+      },
+    );
+  }
+  if (error instanceof OpenAiCompatibilityError) {
+    return new ReviewPreparationFailure('incompatible', false, {
+      message: error.message,
+      usage:
+        error.usage === undefined
+          ? null
+          : providerUsage(model, error.usage),
+    });
+  }
+  return new ReviewPreparationFailure(
+    'provider-unavailable',
+    false,
+    {
+      message:
+        error instanceof Error
+          ? error.message
+          : 'OpenAI Review preparation failed.',
+    },
+  );
 }
 
 function speechProviderUsage(usage: OpenAiUsage): ProviderUsage {

@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
+import { BUNDLED_ENGLISH_EVIDENCE_PACK } from '../evidence/bundled-english-evidence-pack';
 import type { OpenAiConfiguration } from './configuration-store';
 import {
   createOpenAiResponsesClient,
   deepDiveProviderTokenUpperBound,
   OpenAiCompatibilityError,
   OpenAiProviderError,
+  reviewCandidateProviderTokenUpperBound,
+  reviewEvaluationProviderTokenUpperBound,
 } from './openai-responses';
 
 const customConfiguration: OpenAiConfiguration = {
@@ -386,6 +389,179 @@ describe('OpenAI Responses client', () => {
     expect(serialized).not.toMatch(/url|title|DOM|permission|Lookup history/i);
     expect(deepDiveProviderTokenUpperBound(input)).toBeGreaterThan(
       new TextEncoder().encode(serialized).byteLength,
+    );
+  });
+
+  it('generates a bounded Review candidate with the configured review effort', async () => {
+    let request: z.infer<typeof requestBodySchema> | undefined;
+    const client = createOpenAiResponsesClient(async (_input, init) => {
+      request = parseRequestBody(init);
+      return completedResponse({
+        type: 'contrastive',
+        learningItemId: 'learning-1',
+        encounterId: 'encounter-1',
+        knowledgeDimension: 'contextual-meaning',
+        prompt: 'What does postpone mean here?',
+        contextQuote: 'They decided to postpone the vote.',
+        acceptedAnswers: ['delay until later'],
+        distractors: ['cancel permanently'],
+        correctiveExplanation:
+          'Here, postpone means moving the vote to a later time.',
+      });
+    });
+    const input = {
+      apiKey: 'sk-runtime',
+      configuration: customConfiguration,
+      knowledgeDimension: 'contextual-meaning' as const,
+      context: {
+        learningItem: {
+          id: 'learning-1',
+          expression: 'postpone',
+          normalizedExpression: 'postpone',
+          status: 'active' as const,
+          sensePin: null,
+          productiveUseIntent: false,
+        },
+        encounters: [
+          {
+            id: 'encounter-1',
+            learningItemId: 'learning-1',
+            selection: {
+              text: 'postpone',
+              context: {
+                before: 'They decided to ',
+                after: ' the vote.',
+              },
+            },
+            sensePin: null,
+          },
+        ],
+        generation: {
+          model: 'gpt-custom-exact',
+          promptVersion: 'review-prompt-v1',
+        },
+      },
+    };
+
+    await expect(
+      client.generateReviewCandidate(input),
+    ).resolves.toMatchObject({
+      result: {
+        learningItemId: 'learning-1',
+        knowledgeDimension: 'contextual-meaning',
+        acceptedAnswers: ['delay until later'],
+      },
+      usage: { totalTokens: 18 },
+    });
+    expect(request).toMatchObject({
+      model: 'gpt-custom-exact',
+      reasoning: { effort: 'low' },
+      store: false,
+      max_output_tokens: 2_048,
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'review_candidate_contextual_meaning',
+          strict: true,
+        },
+      },
+    });
+    expect(reviewCandidateProviderTokenUpperBound(input)).toBeGreaterThan(
+      new TextEncoder().encode(JSON.stringify(request)).byteLength,
+    );
+  });
+
+  it('evaluates a Review candidate independently with evidence identifiers', async () => {
+    let request: z.infer<typeof requestBodySchema> | undefined;
+    const client = createOpenAiResponsesClient(async (_input, init) => {
+      request = parseRequestBody(init);
+      return completedResponse({
+        grounding: 'pass',
+        answerability: 'pass',
+        linguisticAccuracy: 'pass',
+        constructValidity: 'pass',
+        distractorSafety: 'pass',
+        correctiveExplanation: 'pass',
+        validAlternativeAnswers: [],
+        partialAnswers: [],
+        evidenceAssessments: [
+          {
+            evidenceId:
+              BUNDLED_ENGLISH_EVIDENCE_PACK.contextualMeanings[0]!.id,
+            relation: 'supports',
+          },
+        ],
+      });
+    });
+    const candidate = {
+      type: 'contrastive' as const,
+      learningItemId: 'learning-1',
+      encounterId: 'encounter-1',
+      knowledgeDimension: 'contextual-meaning' as const,
+      prompt: 'What does postpone mean here?',
+      contextQuote: 'They decided to postpone the vote.',
+      acceptedAnswers: ['delay until later'],
+      distractors: ['cancel permanently'],
+      correctiveExplanation:
+        'Here, postpone means moving the vote to a later time.',
+    };
+
+    const evaluationInput = {
+      apiKey: 'sk-runtime',
+      configuration: customConfiguration,
+      learningItem: {
+        id: 'learning-1',
+        expression: 'postpone',
+        normalizedExpression: 'postpone',
+        status: 'active' as const,
+        sensePin: null,
+        productiveUseIntent: false,
+      },
+      encounter: {
+        id: 'encounter-1',
+        learningItemId: 'learning-1',
+        selection: {
+          text: 'postpone',
+          context: {
+            before: 'They decided to ',
+            after: ' the vote.',
+          },
+        },
+        sensePin: null,
+      },
+      candidate,
+      evidence: [
+        BUNDLED_ENGLISH_EVIDENCE_PACK.contextualMeanings[0]!,
+      ],
+    };
+
+    await expect(
+      client.evaluateReviewCandidate(evaluationInput),
+    ).resolves.toMatchObject({
+      result: {
+        grounding: 'pass',
+        evidenceAssessments: [
+          {
+            evidenceId:
+              BUNDLED_ENGLISH_EVIDENCE_PACK.contextualMeanings[0]!.id,
+          },
+        ],
+      },
+      usage: { totalTokens: 18 },
+    });
+    expect(request).toMatchObject({
+      reasoning: { effort: 'low' },
+      text: {
+        format: {
+          name: 'review_candidate_evaluation',
+          strict: true,
+        },
+      },
+    });
+    expect(
+      reviewEvaluationProviderTokenUpperBound(evaluationInput),
+    ).toBeGreaterThan(
+      new TextEncoder().encode(JSON.stringify(request)).byteLength,
     );
   });
 

@@ -214,6 +214,7 @@ function renderReviewSnapshot(
   summary.append(start);
   reviewContent.append(
     summary,
+    renderReviewPreparation(snapshot),
     renderReviewSchedules(snapshot),
     renderReviewEvidence(snapshot),
   );
@@ -225,6 +226,75 @@ function renderReviewSnapshot(
     );
   }
   restoreReviewFocus(restoreFocus);
+}
+
+function renderReviewPreparation(
+  snapshot: ReviewSessionSnapshot,
+): HTMLElement {
+  const details = element('details');
+  details.className = 'review-schedules';
+  details.append(
+    element(
+      'summary',
+      `背景準備（${snapshot.preparation.jobs.length}）`,
+    ),
+  );
+  if (snapshot.preparation.jobs.length === 0) {
+    details.append(
+      element('p', '目前沒有等待中或暫停的 Review 準備工作。'),
+    );
+    return details;
+  }
+  const list = element('ul');
+  for (const job of snapshot.preparation.jobs) {
+    const item = element('li');
+    item.className = 'review-schedule';
+    item.append(
+      labelledText(
+        'Learning Item',
+        job.context.learningItem.expression,
+      ),
+      labelledText('Knowledge Dimension', job.knowledgeDimension),
+      labelledText('狀態', reviewPreparationStatus(job)),
+      labelledText('嘗試次數', `${job.attempts} / 3`),
+    );
+    if (job.status === 'paused') {
+      const resume = element('button', '重試背景準備');
+      resume.addEventListener('click', () =>
+        void performReviewRequest({
+          type: 'resume-review-preparation',
+          jobId: job.id,
+        }),
+      );
+      item.append(resume);
+    }
+    list.append(item);
+  }
+  details.append(list);
+  return details;
+}
+
+function reviewPreparationStatus(
+  job: ReviewSessionSnapshot['preparation']['jobs'][number],
+): string {
+  if (job.status === 'queued') return '等待背景執行';
+  if (job.status === 'running') return '執行中；中斷後會安全復原';
+  switch (job.pauseReason) {
+    case 'offline':
+      return '已暫停：離線';
+    case 'provider-disabled':
+      return '已暫停：OpenAI provider 未啟用';
+    case 'background-token-budget':
+      return '已暫停：背景 token 額度已滿';
+    case 'background-estimated-cost-budget':
+      return '已暫停：背景預估成本額度已滿';
+    case 'retry-exhausted':
+      return `已暫停：重試用盡（${job.lastFailureKind ?? '未知錯誤'}）`;
+    case 'activation-failed':
+      return '已暫停：核准結果無法寫入';
+    default:
+      return `已暫停：${job.lastFailureKind ?? '不可重試錯誤'}`;
+  }
 }
 
 function renderReviewSchedules(snapshot: ReviewSessionSnapshot): HTMLElement {

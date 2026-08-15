@@ -25,6 +25,7 @@ import { BUNDLED_EVIDENCE_PACK_VERSION } from './modules/evidence/evidence-pack-
 import { SIGNED_EVIDENCE_PACK_FIXTURE } from './modules/evidence/signed-evidence-pack-fixture';
 import { BUNDLED_ENGLISH_EVIDENCE_PACK } from './modules/evidence/bundled-english-evidence-pack';
 import type { ApprovedReviewItem } from './modules/review/review-generation-harness';
+import { REVIEW_PREPARATION_JOBS_STORAGE_KEY } from './modules/review/review-preparation-queue';
 import {
   APPROVED_REVIEW_ITEMS_STORAGE_KEY,
   REVIEW_EVIDENCE_STORAGE_KEY,
@@ -3200,6 +3201,387 @@ describe('unpacked extension Reading Flow', () => {
     expect(resumedState[REVIEW_EVIDENCE_STORAGE_KEY]).toEqual(
       beforeIntentPause[REVIEW_EVIDENCE_STORAGE_KEY],
     );
+  }, 60_000);
+
+  it('recovers independently approved multi-dimension Review Items after an offline worker restart', async () => {
+    const evidence =
+      BUNDLED_ENGLISH_EVIDENCE_PACK.contextualMeanings[0];
+    const usageEvidence = BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0];
+    if (evidence === undefined || usageEvidence === undefined) {
+      throw new Error('Expected bundled contextual and usage-fit evidence.');
+    }
+    const completed = (output: unknown) => ({
+      status: 200,
+      body: {
+        output: [
+          {
+            type: 'message',
+            content: [
+              {
+                type: 'output_text',
+                text: JSON.stringify(output),
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 600,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens: 300,
+          output_tokens_details: { reasoning_tokens: 100 },
+          total_tokens: 900,
+        },
+      },
+    });
+    const restartExtension = async () => {
+      await context.close();
+      context = await chromium.launchPersistentContext(profilePath!, {
+        headless: false,
+        args: [
+          `--disable-extensions-except=${extensionPath}`,
+          `--load-extension=${extensionPath}`,
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--enable-caret-browsing',
+        ],
+      });
+      worker =
+        context.serviceWorkers()[0] ??
+        (await context.waitForEvent('serviceworker'));
+    };
+    await worker.evaluate(
+      async ({
+        learningKey,
+        approvedKey,
+        schedulesKey,
+        sessionsKey,
+        evidenceKey,
+        markersKey,
+        jobsKey,
+        budgetSettingsKey,
+        budgetLedgerKey,
+        configurationKey,
+        apiKeyKey,
+        evidencePackStateKey,
+        configuration,
+        sourceSenseId,
+        responses,
+      }) => {
+        await chrome.storage.local.remove([
+          approvedKey,
+          schedulesKey,
+          sessionsKey,
+          evidenceKey,
+          markersKey,
+          jobsKey,
+          budgetLedgerKey,
+          evidencePackStateKey,
+        ]);
+        await chrome.storage.local.set({
+          [configurationKey]: configuration,
+          [apiKeyKey]: 'sk-review-background-test',
+          [budgetSettingsKey]: {
+            tokenLimit: 100_000,
+            estimatedCostUsdLimit: 1,
+          },
+          [learningKey]: {
+            version: 1,
+            learningItems: [
+              {
+                version: 1,
+                id: 'learning-background',
+                expression: 'postpone',
+                normalizedExpression: 'postpone',
+                sensePin: {
+                  evidencePackVersion: '2025.1.0-minimal.3',
+                  sourceSenseId,
+                  morphology: 'base-form:postpone',
+                  partOfSpeech: 'verb',
+                },
+                productiveUseIntent: false,
+                createdAt: '2026-08-01T00:00:00.000Z',
+                status: 'active',
+              },
+            ],
+            encounters: [
+              {
+                version: 1,
+                id: 'encounter-background',
+                learningItemId: 'learning-background',
+                lookupRecordId: 'lookup-background',
+                selection: {
+                  text: 'postpone',
+                  context: {
+                    before: "Let's ",
+                    after: ' the exam',
+                  },
+                },
+                action: {
+                  type: 'quick-hint',
+                  result: {
+                    simplerExpression: 'delay until later',
+                    explanationCue: null,
+                  },
+                },
+                completedAt: '2026-08-01T00:00:00.000Z',
+                savedAt: '2026-08-01T00:01:00.000Z',
+                sensePin: {
+                  evidencePackVersion: '2025.1.0-minimal.3',
+                  sourceSenseId,
+                  morphology: 'base-form:postpone',
+                  partOfSpeech: 'verb',
+                },
+              },
+            ],
+            mergeSuggestions: [],
+            history: [],
+          },
+          [schedulesKey]: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                learningItemId: 'learning-background',
+                knowledgeDimension: 'contextual-meaning',
+                dueAt: '2026-08-01T00:00:00.000Z',
+                demonstratedCount: 2,
+                intervalStage: 3,
+              },
+            ],
+          },
+          openAiTestOnline: true,
+          openAiTestRequests: [],
+          openAiTestResponses: responses,
+        });
+      },
+      {
+        learningKey: LEARNING_STATE_STORAGE_KEY,
+        approvedKey: APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+        schedulesKey: REVIEW_SCHEDULES_STORAGE_KEY,
+        sessionsKey: REVIEW_SESSIONS_STORAGE_KEY,
+        evidenceKey: REVIEW_EVIDENCE_STORAGE_KEY,
+        markersKey: REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+        jobsKey: REVIEW_PREPARATION_JOBS_STORAGE_KEY,
+        budgetSettingsKey: OPENAI_BUDGET_SETTINGS_STORAGE_KEY,
+        budgetLedgerKey: OPENAI_BUDGET_LEDGER_STORAGE_KEY,
+        configurationKey: OPENAI_CONFIGURATION_STORAGE_KEY,
+        apiKeyKey: OPENAI_API_KEY_STORAGE_KEY,
+        evidencePackStateKey: EVIDENCE_PACK_STATE_STORAGE_KEY,
+        configuration: DEFAULT_OPENAI_CONFIGURATION,
+        sourceSenseId: evidence.sourceSenseId,
+        responses: [
+          completed({
+            type: 'contrastive',
+            learningItemId: 'learning-background',
+            encounterId: 'encounter-background',
+            knowledgeDimension: 'contextual-meaning',
+            prompt: 'What does postpone mean here?',
+            contextQuote: "Let's postpone the exam",
+            acceptedAnswers: ['delay until later'],
+            distractors: ['cancel permanently'],
+            correctiveExplanation:
+              'Here, postpone means moving the vote to a later time.',
+          }),
+          completed({
+            grounding: 'pass',
+            answerability: 'pass',
+            linguisticAccuracy: 'pass',
+            constructValidity: 'pass',
+            distractorSafety: 'pass',
+            correctiveExplanation: 'pass',
+            validAlternativeAnswers: [],
+            partialAnswers: [],
+            evidenceAssessments: [
+              {
+                evidenceId: evidence.id,
+                relation: 'supports',
+              },
+            ],
+          }),
+          completed({
+            type: 'contrastive',
+            learningItemId: 'learning-background',
+            encounterId: 'encounter-background',
+            knowledgeDimension: 'usage-fit',
+            prompt: 'Does postpone fit this context?',
+            contextQuote: "Let's postpone the exam",
+            acceptedAnswers: ['yes, it fits'],
+            distractors: ['no, it does not fit'],
+            correctiveExplanation:
+              'Postpone fits this attested sense context.',
+            claimedFit: 'fits',
+          }),
+          completed({
+            grounding: 'pass',
+            answerability: 'pass',
+            linguisticAccuracy: 'pass',
+            constructValidity: 'pass',
+            distractorSafety: 'pass',
+            correctiveExplanation: 'pass',
+            validAlternativeAnswers: [],
+            partialAnswers: [],
+            evidenceAssessments: [
+              {
+                evidenceId: usageEvidence.id,
+                relation: 'supports',
+              },
+            ],
+          }),
+        ],
+      },
+    );
+
+    await expect
+      .poll(async () =>
+        worker.evaluate(async (approvedKey) => {
+          const stored = await chrome.storage.local.get(approvedKey);
+          const records = (
+            stored[approvedKey] as
+              | { records?: Array<{ knowledgeDimension?: string }> }
+              | undefined
+          )?.records;
+          return records?.map((item) => item.knowledgeDimension) ?? [];
+        }, APPROVED_REVIEW_ITEMS_STORAGE_KEY),
+      )
+      .toContain('contextual-meaning');
+    await expect
+      .poll(() =>
+        worker.evaluate(async (schedulesKey) => {
+          const stored = await chrome.storage.local.get(schedulesKey);
+          return stored[schedulesKey];
+        }, REVIEW_SCHEDULES_STORAGE_KEY),
+      )
+      .toMatchObject({
+        records: [
+          {
+            learningItemId: 'learning-background',
+            knowledgeDimension: 'contextual-meaning',
+            demonstratedCount: 2,
+            intervalStage: 3,
+          },
+        ],
+      });
+    await restartExtension();
+    await expect
+      .poll(async () =>
+        worker.evaluate(async (approvedKey) => {
+          const stored = await chrome.storage.local.get(approvedKey);
+          const records = (
+            stored[approvedKey] as
+              | { records?: Array<{ knowledgeDimension?: string }> }
+              | undefined
+          )?.records;
+          return records?.map((item) => item.knowledgeDimension) ?? [];
+        }, APPROVED_REVIEW_ITEMS_STORAGE_KEY),
+      )
+      .toContain('usage-fit');
+
+    const providerRequests = await worker.evaluate(async () => {
+      const stored =
+        await chrome.storage.local.get('openAiTestRequests');
+      return Array.isArray(stored.openAiTestRequests)
+        ? stored.openAiTestRequests
+        : [];
+    });
+    expect(
+      providerRequests.map(
+        (request: { text?: { format?: { name?: string } } }) =>
+          request.text?.format?.name,
+      ),
+    ).toEqual([
+      'review_candidate_contextual_meaning',
+      'review_candidate_evaluation',
+      'review_candidate_usage_fit',
+      'review_candidate_evaluation',
+    ]);
+
+    await worker.evaluate(async () => {
+      await chrome.storage.local.set({ openAiTestOnline: false });
+    });
+    await restartExtension();
+    const sidePanel = await context.newPage();
+    await sidePanel.goto(
+      `${extensionOriginFrom(worker)}/sidepanel.html`,
+    );
+    await sidePanel.getByRole('tab', { name: 'Review' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('目前有 1 個 Learning Items 可以複習。')
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel
+      .getByText('背景準備（2）', { exact: true })
+      .click();
+    await sidePanel.screenshot({
+      path: resolve(
+        'docs/assets/issue-15-background-preparation.png',
+      ),
+      fullPage: true,
+    });
+    await sidePanel
+      .getByRole('button', { name: '開始 Review' })
+      .click();
+    await expect
+      .poll(() =>
+        worker.evaluate(async ([sessionsKey, approvedKey]) => {
+          const stored = await chrome.storage.local.get([
+            sessionsKey,
+            approvedKey,
+          ]);
+          const session = (
+            stored[sessionsKey] as
+              | {
+                  records?: Array<{
+                    status?: string;
+                    reviewItemIds?: string[];
+                  }>;
+                }
+              | undefined
+          )?.records?.find((candidate) => candidate.status === 'active');
+          const approvedIds = new Set(
+            (
+              stored[approvedKey] as
+                | { records?: Array<{ id?: string }> }
+                | undefined
+            )?.records?.map((item) => item.id) ?? [],
+          );
+          return {
+            reviewItemCount: session?.reviewItemIds?.length,
+            everyItemApproved:
+              session?.reviewItemIds?.every((id) => approvedIds.has(id)) ??
+              false,
+          };
+        }, [
+          REVIEW_SESSIONS_STORAGE_KEY,
+          APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+        ] as const),
+      )
+      .toEqual({ reviewItemCount: 1, everyItemApproved: true });
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText(
+            /^(?:What does postpone mean here|Does postpone fit this context)\?$/,
+          )
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel.screenshot({
+      path: resolve('docs/assets/issue-15-offline-review-ready.png'),
+      fullPage: true,
+    });
+    expect(
+      await worker.evaluate(async () => {
+        const stored =
+          await chrome.storage.local.get('openAiTestRequests');
+        return Array.isArray(stored.openAiTestRequests)
+          ? stored.openAiTestRequests.length
+          : 0;
+      }),
+    ).toBe(4);
+    await sidePanel.close();
   }, 60_000);
 });
 function extensionOriginFrom(extensionWorker: Worker): string {

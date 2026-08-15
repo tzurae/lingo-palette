@@ -91,6 +91,17 @@ const budgetSnapshotSchema = z.object({
     tokens: z.number().int().nonnegative(),
     estimatedCostUsd: z.number().nonnegative(),
   }),
+  background: z.object({
+    used: usageSchema,
+    reserved: z.object({
+      tokens: z.number().int().nonnegative(),
+      estimatedCostUsd: z.number().nonnegative(),
+    }),
+    limit: z.object({
+      tokens: z.number().int().nonnegative(),
+      estimatedCostUsd: z.number().nonnegative(),
+    }),
+  }),
 });
 const settingsSnapshotSchema = z.object({
   configuration: configurationResponseSchema,

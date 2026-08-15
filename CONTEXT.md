@@ -128,6 +128,10 @@ _Avoid_: Model rationale, generic citation, cross-dimension evidence
 A learner-initiated sequence of due review items, bounded so completing it does not require clearing the entire review queue.
 _Avoid_: Daily test, due-item backlog
 
+**Review Preparation**:
+Background work that generates or revalidates a due Review Item before a Review Session, under a protected budget share. Preparation cannot add an item to future session eligibility until independent Evidence Pack validation approves it; paused work remains inspectable and resumes only through an explicit Learner action.
+_Avoid_: Review Session, live generation, unchecked candidate
+
 **Micro-review**:
 An optional retrieval opportunity offered when the learner deliberately selects a learning item encountered again during the reading flow.
 _Avoid_: Interruption, automatic quiz
