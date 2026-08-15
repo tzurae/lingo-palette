@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+  REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+} from '../review/review-storage-keys';
+import {
   createBrowserApprovedReviewRevalidationPort,
   createBrowserEvidencePackLifecycleStorage,
   createTrustedEvidencePackTransport,
-  REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
   type BrowserStorageArea,
 } from './evidence-pack-browser-adapters';
 import type { EvidencePackState } from './evidence-pack-lifecycle';

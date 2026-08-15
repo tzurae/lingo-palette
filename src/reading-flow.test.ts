@@ -23,6 +23,14 @@ import { LOOKUP_RECORDS_STORAGE_KEY } from './modules/learning/lookup-record';
 import { EVIDENCE_PACK_STATE_STORAGE_KEY } from './modules/evidence/evidence-pack-browser-adapters';
 import { BUNDLED_EVIDENCE_PACK_VERSION } from './modules/evidence/evidence-pack-catalog';
 import { SIGNED_EVIDENCE_PACK_FIXTURE } from './modules/evidence/signed-evidence-pack-fixture';
+import { BUNDLED_ENGLISH_EVIDENCE_PACK } from './modules/evidence/bundled-english-evidence-pack';
+import type { ApprovedReviewItem } from './modules/review/review-generation-harness';
+import {
+  APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+  REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+  REVIEW_SCHEDULES_STORAGE_KEY,
+  REVIEW_SESSIONS_STORAGE_KEY,
+} from './modules/review/review-storage-keys';
 
 declare const chrome: typeof browser;
 
@@ -567,15 +575,15 @@ describe('unpacked extension Reading Flow', () => {
     await expect
       .poll(() =>
         sidePanel
-          .getByRole('tab', { name: 'Saved' })
+          .getByRole('tab', { name: 'Review' })
           .getAttribute('aria-selected'),
       )
       .toBe('true');
-    await sidePanel.getByRole('tab', { name: 'Saved' }).press('ArrowLeft');
+    await sidePanel.getByRole('tab', { name: 'Review' }).press('ArrowLeft');
     await expect
       .poll(() =>
         sidePanel
-          .getByRole('tab', { name: 'Recent' })
+          .getByRole('tab', { name: 'Saved' })
           .getAttribute('aria-selected'),
       )
       .toBe('true');
@@ -2112,6 +2120,381 @@ describe('unpacked extension Reading Flow', () => {
     await expect
       .poll(() => sidePanel.getByText('已選擇保持分開').isVisible())
       .toBe(true);
+  }, 60_000);
+
+  it('saves and approves material, resumes a shortened reveal-first Review Session offline, and completes it', async () => {
+    await worker.evaluate(
+      async ([
+        lookupKey,
+        evidenceKey,
+        learningKey,
+        approvedKey,
+        schedulesKey,
+        sessionsKey,
+        markersKey,
+      ]) => {
+        await chrome.storage.local.remove([
+          learningKey,
+          approvedKey,
+          schedulesKey,
+          sessionsKey,
+          markersKey,
+        ]);
+        await chrome.storage.local.set({
+          [lookupKey]: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                id: 'review-lookup',
+                selection: {
+                  text: 'postponed',
+                  context: { before: 'They ', after: ' the vote.' },
+                },
+                action: {
+                  type: 'quick-hint',
+                  result: {
+                    simplerExpression: 'delayed',
+                    explanationCue: null,
+                  },
+                },
+                completedAt: '2026-08-15T11:00:00.000Z',
+                usage: { source: 'cache', attempts: 0, provider: null },
+                sourceUrl: 'https://news.example/article',
+              },
+            ],
+          },
+          [evidenceKey]: {
+            version: 1,
+            evidencePackVersion: 'oewn-browser-test-2025.1',
+            entries: [
+              {
+                normalizedExpression: 'postponed',
+                morphology: 'past-tense-of:postpone',
+                partOfSpeech: 'verb',
+                sourceSenseId: 'oewn:02642814-v',
+              },
+            ],
+            occurrenceAnalyses: [
+              {
+                lookupRecordId: 'review-lookup',
+                normalizedExpression: 'postponed',
+                morphology: 'past-tense-of:postpone',
+                partOfSpeech: 'verb',
+              },
+            ],
+          },
+        });
+      },
+      [
+        LOOKUP_RECORDS_STORAGE_KEY,
+        ACTIVE_EVIDENCE_INDEX_STORAGE_KEY,
+        LEARNING_STATE_STORAGE_KEY,
+        APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+        REVIEW_SCHEDULES_STORAGE_KEY,
+        REVIEW_SESSIONS_STORAGE_KEY,
+        REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+      ] as const,
+    );
+
+    let sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await sidePanel.getByRole('tab', { name: 'Recent' }).click();
+    const lookup = sidePanel.locator('.lookup-record').filter({
+      has: sidePanel.getByText('Selection: postponed', { exact: true }),
+    });
+    await lookup.getByRole('button', { name: '儲存到 Saved' }).click();
+    await expect
+      .poll(() => lookup.getByRole('button', { name: '已儲存' }).isDisabled())
+      .toBe(true);
+    const learningItemId = await worker.evaluate(async (key) => {
+      const raw = (await chrome.storage.local.get(key))[key];
+      if (
+        raw === null ||
+        typeof raw !== 'object' ||
+        !('learningItems' in raw) ||
+        !Array.isArray(raw.learningItems)
+      ) {
+        throw new Error('Expected durable Learning Item state.');
+      }
+      const first = raw.learningItems[0];
+      if (
+        first === null ||
+        typeof first !== 'object' ||
+        !('id' in first) ||
+        typeof first.id !== 'string'
+      ) {
+        throw new Error('Expected one saved Learning Item.');
+      }
+      return first.id;
+    }, LEARNING_STATE_STORAGE_KEY);
+    const reviewItem: ApprovedReviewItem = {
+      version: 1,
+      id: 'approved-review-postponed',
+      learningItemId,
+      knowledgeDimension: 'contextual-meaning',
+      task: {
+        type: 'contrastive',
+        prompt: '<img src=x onerror=alert(1)> Which meaning fits?',
+        contextQuote: 'They postponed the vote.',
+        acceptedAnswers: ['<svg onload=alert(2)> delayed it'],
+        distractors: ['cancelled it'],
+        correctiveExplanation: 'Postponed means moved to a later time.',
+      },
+      provenance: {
+        approvedAt: '2026-08-15T11:05:00.000Z',
+        generation: { model: 'controlled', promptVersion: 'review-v1' },
+        validatorVersion: 'validator-v1',
+        evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK.manifest,
+        relevantEvidence: [
+          ...BUNDLED_ENGLISH_EVIDENCE_PACK.contextualMeanings,
+        ],
+        licenseAndAttribution:
+          BUNDLED_ENGLISH_EVIDENCE_PACK.licenseAndAttribution,
+        validation: { outcome: 'approved', reasons: [] },
+      },
+    };
+    await worker.evaluate(
+      async ({ approvedKey, schedulesKey, item }) => {
+        await chrome.storage.local.set({
+          [approvedKey]: { version: 1, records: [item] },
+          [schedulesKey]: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                learningItemId: item.learningItemId,
+                knowledgeDimension: item.knowledgeDimension,
+                dueAt: '2020-01-01T00:00:00.000Z',
+                demonstratedCount: 0,
+                intervalStage: 0,
+              },
+            ],
+          },
+        });
+      },
+      {
+        approvedKey: APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+        schedulesKey: REVIEW_SCHEDULES_STORAGE_KEY,
+        item: reviewItem,
+      },
+    );
+
+    await sidePanel.getByRole('tab', { name: 'Review' }).click();
+    await expect
+      .poll(() => sidePanel.getByRole('button', { name: '開始 Review' }).isVisible())
+      .toBe(true);
+    await sidePanel.getByRole('button', { name: '開始 Review' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('<img src=x onerror=alert(1)> Which meaning fits?', {
+            exact: true,
+          })
+          .isVisible(),
+      )
+      .toBe(true);
+    expect(
+      await sidePanel
+        .getByText('<svg onload=alert(2)> delayed it', { exact: true })
+        .count(),
+    ).toBe(0);
+    expect(await sidePanel.locator('img, svg').count()).toBe(0);
+    await expect
+      .poll(() => sidePanel.getByText('shortened session').isVisible())
+      .toBe(true);
+
+    await sidePanel.close();
+    await context.close();
+    context = await chromium.launchPersistentContext(profilePath, {
+      headless: false,
+      offline: true,
+      args: [
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
+    });
+    worker =
+      context.serviceWorkers()[0] ??
+      (await context.waitForEvent('serviceworker'));
+    sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await sidePanel.getByRole('tab', { name: 'Review' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('<img src=x onerror=alert(1)> Which meaning fits?', {
+            exact: true,
+          })
+          .isVisible(),
+      )
+      .toBe(true);
+    expect(
+      await sidePanel
+        .getByText('<svg onload=alert(2)> delayed it', { exact: true })
+        .count(),
+    ).toBe(0);
+    await sidePanel.getByRole('button', { name: '顯示答案' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('<svg onload=alert(2)> delayed it', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    expect(await sidePanel.locator('img, svg').count()).toBe(0);
+    await expect
+      .poll(() =>
+        sidePanel.evaluate(() => document.activeElement?.textContent?.trim()),
+      )
+      .toBe('完成 Review');
+    await sidePanel.getByRole('button', { name: '完成 Review' }).click();
+    await expect
+      .poll(() => sidePanel.getByText('本次 Review 已完成').isVisible())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.evaluate(() => document.activeElement?.textContent?.trim()),
+      )
+      .toBe('返回 Review');
+
+    const storedReview = await worker.evaluate(
+      async ([sessionsKey, schedulesKey]) =>
+        chrome.storage.local.get([sessionsKey, schedulesKey]),
+      [REVIEW_SESSIONS_STORAGE_KEY, REVIEW_SCHEDULES_STORAGE_KEY] as const,
+    );
+    expect(storedReview[REVIEW_SESSIONS_STORAGE_KEY]).toMatchObject({
+      version: 1,
+      records: [
+        {
+          status: 'completed',
+          reviewItemIds: ['approved-review-postponed'],
+          revealedReviewItemIds: ['approved-review-postponed'],
+        },
+      ],
+    });
+    expect(storedReview[REVIEW_SCHEDULES_STORAGE_KEY]).toMatchObject({
+      version: 1,
+      records: [
+        {
+          learningItemId,
+          knowledgeDimension: 'contextual-meaning',
+          intervalStage: 0,
+          demonstratedCount: 0,
+        },
+      ],
+    });
+
+    await worker.evaluate(
+      async ({ learningKey, approvedKey, schedulesKey, sessionsKey, template }) => {
+        const learningItems = [
+          ['learning-z', '2026-08-10T00:00:00.000Z'],
+          ['learning-y', '2026-08-10T00:00:00.000Z'],
+          ['learning-x', '2026-08-10T00:00:00.000Z'],
+          ['learning-w', '2026-08-09T00:00:00.000Z'],
+          ['learning-a', '2026-08-10T00:00:00.000Z'],
+          ['learning-b', '2026-08-10T00:00:00.000Z'],
+          ['learning-future', '2026-08-01T00:00:00.000Z'],
+        ].map(([id, createdAt]) => ({
+          version: 1,
+          id,
+          expression: id,
+          normalizedExpression: id,
+          sensePin: null,
+          productiveUseIntent: false,
+          createdAt,
+          status: 'active',
+        }));
+        const approvalSpecs = [
+          ['review-a', 'learning-z'],
+          ['review-b', 'learning-y'],
+          ['review-c1', 'learning-x'],
+          ['review-c0', 'learning-x'],
+          ['review-d', 'learning-w'],
+          ['review-e', 'learning-a'],
+          ['review-f', 'learning-b'],
+          ['review-future', 'learning-future'],
+        ];
+        const approvedItems = approvalSpecs.map(([id, itemId]) => ({
+          ...template,
+          id,
+          learningItemId: itemId,
+          task: {
+            ...template.task,
+            prompt: `Retrieve ${id}`,
+            contextQuote: `Context for ${id}`,
+          },
+        }));
+        const scheduleSpecs = [
+          ['learning-z', '2026-08-10T00:00:00.000Z', 9, 8],
+          ['learning-y', '2026-08-11T00:00:00.000Z', 0, 7],
+          ['learning-x', '2026-08-11T00:00:00.000Z', 1, 0],
+          ['learning-w', '2026-08-11T00:00:00.000Z', 1, 1],
+          ['learning-a', '2026-08-11T00:00:00.000Z', 1, 1],
+          ['learning-b', '2026-08-11T00:00:00.000Z', 1, 1],
+          ['learning-future', '2099-08-16T00:00:00.000Z', 0, 0],
+        ];
+        const schedules = scheduleSpecs.map(
+          ([itemId, dueAt, demonstratedCount, intervalStage]) => ({
+            version: 1,
+            learningItemId: itemId,
+            knowledgeDimension: 'contextual-meaning',
+            dueAt,
+            demonstratedCount,
+            intervalStage,
+          }),
+        );
+        await chrome.storage.local.set({
+          [learningKey]: {
+            version: 1,
+            learningItems,
+            encounters: [],
+            mergeSuggestions: [],
+            history: [],
+          },
+          [approvedKey]: { version: 1, records: approvedItems },
+          [schedulesKey]: { version: 1, records: schedules },
+          [sessionsKey]: { version: 1, records: [] },
+        });
+      },
+      {
+        learningKey: LEARNING_STATE_STORAGE_KEY,
+        approvedKey: APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+        schedulesKey: REVIEW_SCHEDULES_STORAGE_KEY,
+        sessionsKey: REVIEW_SESSIONS_STORAGE_KEY,
+        template: reviewItem,
+      },
+    );
+    await sidePanel.reload();
+    await sidePanel.getByRole('tab', { name: 'Review' }).click();
+    await expect
+      .poll(() => sidePanel.getByRole('button', { name: '開始 Review' }).isVisible())
+      .toBe(true);
+    await sidePanel.getByRole('button', { name: '開始 Review' }).click();
+    await expect
+      .poll(() => sidePanel.getByText('Retrieve review-a', { exact: true }).isVisible())
+      .toBe(true);
+    const fullSessionState = await worker.evaluate(
+      async (key) => (await chrome.storage.local.get(key))[key],
+      REVIEW_SESSIONS_STORAGE_KEY,
+    );
+    expect(fullSessionState).toMatchObject({
+      version: 1,
+      records: [
+        {
+          status: 'active',
+          reviewItemIds: [
+            'review-a',
+            'review-b',
+            'review-c0',
+            'review-d',
+            'review-e',
+          ],
+        },
+      ],
+    });
   }, 60_000);
 });
 function extensionOriginFrom(extensionWorker: Worker): string {

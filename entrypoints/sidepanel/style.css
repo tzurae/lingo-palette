@@ -54,7 +54,7 @@ h3 {
 
 [role="tablist"] {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   border-bottom: 1px solid #94a3b8;
   background: #fff;
 }
@@ -272,6 +272,54 @@ li p {
   padding: 8px 12px;
 }
 
+.review-card,
+.review-summary,
+.review-schedule {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.review-card {
+  border-left: 5px solid #1d4ed8;
+}
+
+.review-card .context-quote {
+  padding: 10px;
+  border-left: 4px solid #64748b;
+  background: #f8fafc;
+}
+
+.review-card button,
+.review-summary button {
+  min-height: 44px;
+  justify-self: start;
+  padding: 8px 14px;
+}
+
+.review-answer {
+  padding-top: 12px;
+  border-top: 1px solid #cbd5e1;
+}
+
+.review-schedules {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.review-schedule p {
+  margin-bottom: 0;
+}
+
+.review-error {
+  color: #991b1b;
+  font-weight: 700;
+}
+
 .error {
   color: #991b1b;
   font-weight: 700;
@@ -297,7 +345,10 @@ li p {
   .lookup-record,
   .learning-item,
   .merge-suggestion,
-  .learning-mutation {
+  .learning-mutation,
+  .review-card,
+  .review-summary,
+  .review-schedule {
     border: 2px solid ButtonText;
   }
 
