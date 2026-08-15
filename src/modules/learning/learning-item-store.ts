@@ -179,6 +179,14 @@ export type SaveLookupResult = {
   encounterId: string;
 };
 
+export type ProductiveUseSchedulePort = {
+  setProductiveUseIntent(
+    learningItemId: string,
+    enabled: boolean,
+    atomicStorageItems: Record<string, unknown>,
+  ): Promise<void>;
+};
+
 const emptyState = (): LearningState => ({
   learningItems: [],
   encounters: [],
@@ -192,6 +200,7 @@ export function createLearningItemStore(
   dependencies: {
     id?: (kind: LearningRecordKind) => string;
     now?: () => string;
+    productiveUseSchedule?: ProductiveUseSchedulePort;
   } = {},
 ): {
   load(): Promise<LearningState>;
@@ -510,12 +519,24 @@ export function createLearningItemStore(
           ...item,
           productiveUseIntent: enabled,
         };
-        await save({
+        const nextState: LearningState = {
           ...state,
           learningItems: state.learningItems.map((candidate) =>
             candidate.id === updated.id ? updated : candidate,
           ),
-        });
+        };
+        const atomicStorageItems = {
+          [LEARNING_STATE_STORAGE_KEY]: { version: 1, ...nextState },
+        };
+        if (dependencies.productiveUseSchedule === undefined) {
+          await storage.set(atomicStorageItems);
+        } else {
+          await dependencies.productiveUseSchedule.setProductiveUseIntent(
+            item.id,
+            enabled,
+            atomicStorageItems,
+          );
+        }
         return updated;
       });
     },

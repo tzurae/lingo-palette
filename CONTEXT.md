@@ -79,7 +79,7 @@ A particular learning-language expression with one contextually distinct meaning
 _Avoid_: Lookup record, saved word, flashcard
 
 **Productive-use Intent**:
-The Learner's current choice that a Learning Item should include review of active expression use in addition to receptive knowledge.
+The Learner's current per-Learning-Item choice to add active expression use to receptive review. Enabling creates or resumes its independent productive-use schedule; disabling pauses prompts without deleting stage or Review Evidence.
 _Avoid_: Productive mastery, global review mode
 
 **Encounter**:
@@ -105,7 +105,7 @@ A grounded prompt, accepted answer set, and corrective explanation designed to e
 _Avoid_: Question, quiz card, flashcard
 
 **Review Evidence**:
-An observed result from attempting a review item, identified by knowledge dimension and response method. Self-assessment and objectively scored responses are distinct kinds of review evidence.
+An observed result from attempting a review item, identified by knowledge dimension and response method. Receptive evidence may be self-assessed or objectively scored; productive-use evidence always records an overt production plus layered Review Judgment.
 _Avoid_: Mastery score, review result
 
 **Retrieval Fluency**:
@@ -121,7 +121,7 @@ A versioned, language-specific collection of licensed lexical and usage evidence
 _Avoid_: Dictionary, model knowledge
 
 **Review Source Authority**:
-The dimension-specific Evidence Pack provenance that authorized an approved Review Item and remains pinned to the resulting Review Evidence. Usage fit requires matching sense/context evidence; grammar pattern requires a source-recorded frame or usage note, or repeated POS-aware corpus attestations.
+The dimension-specific Evidence Pack provenance that authorized an approved Review Item and remains pinned to the resulting Review Evidence. Usage fit requires matching sense/context evidence; grammar pattern requires a source-recorded frame or usage note, or repeated POS-aware corpus attestations; collocation requires a documented corpus, window, association statistic, and minimum raw count; productive use requires source-grounded language evidence.
 _Avoid_: Model rationale, generic citation, cross-dimension evidence
 
 **Review Session**:

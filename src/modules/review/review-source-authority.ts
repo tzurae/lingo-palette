@@ -4,6 +4,8 @@ export const measuredReviewKnowledgeDimensionSchema = z.enum([
   'contextual-meaning',
   'usage-fit',
   'grammar-pattern',
+  'collocation',
+  'productive-use',
 ]);
 
 export const reviewSourceAuthoritySchema = z
@@ -22,6 +24,7 @@ export const reviewSourceAuthoritySchema = z
               'source-recorded-frame',
               'source-recorded-usage-note',
               'pos-aware-corpus-attestation',
+              'corpus-collocation',
             ]),
           })
           .strict(),
@@ -35,11 +38,22 @@ export const reviewSourceAuthoritySchema = z
         ? new Set(['primary-lexical'])
         : sourceAuthority.knowledgeDimension === 'usage-fit'
           ? new Set(['sense-context'])
-          : new Set([
-              'source-recorded-frame',
-              'source-recorded-usage-note',
-              'pos-aware-corpus-attestation',
-            ]);
+          : sourceAuthority.knowledgeDimension === 'grammar-pattern'
+            ? new Set([
+                'source-recorded-frame',
+                'source-recorded-usage-note',
+                'pos-aware-corpus-attestation',
+              ])
+            : sourceAuthority.knowledgeDimension === 'collocation'
+              ? new Set(['corpus-collocation'])
+              : new Set([
+                  'primary-lexical',
+                  'sense-context',
+                  'source-recorded-frame',
+                  'source-recorded-usage-note',
+                  'pos-aware-corpus-attestation',
+                  'corpus-collocation',
+                ]);
     const evidenceIds = new Set<string>();
     for (const [index, evidence] of sourceAuthority.evidence.entries()) {
       if (evidenceIds.has(evidence.evidenceId)) {

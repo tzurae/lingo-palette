@@ -102,11 +102,12 @@ const evidencePackLifecycle = createEvidencePackLifecycle({
 });
 const approvedReviewRevalidationPort =
   createBrowserApprovedReviewRevalidationPort(browser.storage.local);
+const reviewSessionStore = createReviewSessionStore(browser.storage.local);
 const learningItemStore = createLearningItemStore(
   browser.storage.local,
   createStoredEligibleSenseLookup(browser.storage.local),
+  { productiveUseSchedule: reviewSessionStore },
 );
-const reviewSessionStore = createReviewSessionStore(browser.storage.local);
 const speechCache = createSpeechCache(browser.storage.local);
 const openAiSpeechClient = createOpenAiSpeechClient(
   import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,

@@ -28,6 +28,8 @@ const knowledgeDimensionSchema = z.enum([
   'contextual-meaning',
   'usage-fit',
   'grammar-pattern',
+  'collocation',
+  'productive-use',
 ]);
 const scheduleKnowledgeDimensionSchema = z.enum([
   'contextual-meaning',
@@ -51,7 +53,7 @@ const taskSchema = z.discriminatedUnion('type', [
     .strict(),
   z
     .object({
-      type: z.literal('recall'),
+      type: z.enum(['recall', 'productive']),
       prompt: z.string().min(1),
       contextQuote: z.string().min(1),
       targetAnswers: z.array(z.string().min(1)).min(1),
@@ -122,6 +124,17 @@ const approvedReviewItemSchema = z
   })
   .passthrough()
   .superRefine((item, context) => {
+    const hasProductiveTask = item.task.type === 'productive';
+    if (
+      (item.knowledgeDimension === 'productive-use') !== hasProductiveTask
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['task', 'type'],
+        message:
+          'Productive Review task must match the productive-use Knowledge Dimension.',
+      });
+    }
     const sourceAuthority = item.provenance.sourceAuthority;
     if (
       sourceAuthority !== undefined &&
@@ -268,6 +281,7 @@ const learningItemSchema = z
     id: z.string().min(1),
     createdAt: z.iso.datetime(),
     status: z.enum(['active', 'merged']),
+    productiveUseIntent: z.boolean().optional(),
   })
   .passthrough();
 const answerInputSchema = z
@@ -341,6 +355,11 @@ export function createReviewSessionStore(
       demonstratedCount: number;
       intervalStage: number;
     },
+  ): Promise<void>;
+  setProductiveUseIntent(
+    learningItemId: string,
+    enabled: boolean,
+    atomicStorageItems?: Record<string, unknown>,
   ): Promise<void>;
   start(
     learningItems: readonly unknown[],
@@ -434,6 +453,131 @@ export function createReviewSessionStore(
             records: hasSchedule
               ? scheduleState.records
               : [...scheduleState.records, nextSchedule],
+          },
+        });
+      });
+    },
+
+    setProductiveUseIntent(
+      learningItemId,
+      enabled,
+      atomicStorageItems = {},
+    ) {
+      return serialized(async () => {
+        const parsedLearningItemId = z.string().min(1).parse(learningItemId);
+        const hasAtomicStorageItems =
+          Object.keys(atomicStorageItems).length > 0;
+        if (!enabled) {
+          const [approvedState, sessionState, evidenceState] =
+            await loadSessionRecords(storage);
+          const productiveReviewItemIds = new Set(
+            approvedState.records
+              .filter(
+                (item) =>
+                  item.learningItemId === parsedLearningItemId &&
+                  item.knowledgeDimension === 'productive-use',
+              )
+              .map((item) => item.id),
+          );
+          if (productiveReviewItemIds.size === 0) {
+            if (hasAtomicStorageItems) await storage.set(atomicStorageItems);
+            return;
+          }
+          let changed = false;
+          const nextSessions = sessionState.records.flatMap((session) => {
+            if (session.status !== 'active') return [session];
+            const answeredReviewItemIds = new Set(
+              evidenceState.records
+                .filter((record) => record.sessionId === session.id)
+                .map((record) => record.reviewItemId),
+            );
+            const retainedReviewItemIds = session.reviewItemIds.filter(
+              (reviewItemId) =>
+                !productiveReviewItemIds.has(reviewItemId) ||
+                answeredReviewItemIds.has(reviewItemId),
+            );
+            if (
+              retainedReviewItemIds.length === session.reviewItemIds.length
+            ) {
+              return [session];
+            }
+            changed = true;
+            if (retainedReviewItemIds.length === 0) return [];
+            const retainedBeforeCurrent = session.reviewItemIds
+              .slice(0, session.currentIndex)
+              .filter((reviewItemId) =>
+                retainedReviewItemIds.includes(reviewItemId),
+              ).length;
+            if (retainedBeforeCurrent >= retainedReviewItemIds.length) {
+              return [
+                sessionSchema.parse({
+                  ...session,
+                  status: 'completed',
+                  completedAt: now(),
+                  reviewItemIds: retainedReviewItemIds,
+                  currentIndex: retainedReviewItemIds.length - 1,
+                  revealedReviewItemIds:
+                    session.revealedReviewItemIds.filter((reviewItemId) =>
+                      retainedReviewItemIds.includes(reviewItemId),
+                    ),
+                }),
+              ];
+            }
+            return [
+              sessionSchema.parse({
+                ...session,
+                reviewItemIds: retainedReviewItemIds,
+                currentIndex: retainedBeforeCurrent,
+                revealedReviewItemIds: session.revealedReviewItemIds.filter(
+                  (reviewItemId) =>
+                    retainedReviewItemIds.includes(reviewItemId),
+                ),
+              }),
+            ];
+          });
+          if (changed || hasAtomicStorageItems) {
+            await storage.set({
+              ...atomicStorageItems,
+              ...(changed
+                ? {
+                    [REVIEW_SESSIONS_STORAGE_KEY]: {
+                      version: 1,
+                      records: nextSessions,
+                    },
+                  }
+                : {}),
+            });
+          }
+          return;
+        }
+        const scheduleState = await loadState(
+          storage,
+          REVIEW_SCHEDULES_STORAGE_KEY,
+          scheduleStateSchema,
+          emptyScheduleState,
+        );
+        const nextSchedule = scheduleSchema.parse({
+          version: 1,
+          learningItemId: parsedLearningItemId,
+          knowledgeDimension: 'productive-use',
+          dueAt: now(),
+          demonstratedCount: 0,
+          intervalStage: 0,
+        });
+        if (
+          scheduleState.records.some(
+            (record) =>
+              scheduleIdentity(record) === scheduleIdentity(nextSchedule),
+          )
+        ) {
+          if (hasAtomicStorageItems) await storage.set(atomicStorageItems);
+          return;
+        }
+        await storage.set({
+          ...atomicStorageItems,
+          [REVIEW_SCHEDULES_STORAGE_KEY]: {
+            version: 1,
+            records: [...scheduleState.records, nextSchedule],
           },
         });
       });
@@ -584,7 +728,10 @@ export function createReviewSessionStore(
             record.learningItemId === item.learningItemId &&
             record.knowledgeDimension === item.knowledgeDimension,
         );
-        const attemptKind = calibrationFor(history).nextAttempt;
+        const attemptKind =
+          item.knowledgeDimension === 'productive-use'
+            ? 'objective'
+            : calibrationFor(history).nextAttempt;
         if (attemptKind === 'objective' && input.responseText === undefined) {
           throw new Error('An objective Review attempt requires an overt response.');
         }
@@ -617,7 +764,11 @@ export function createReviewSessionStore(
             : { sourceAuthority: item.provenance.sourceAuthority }),
           kind: attemptKind,
           responseMethod:
-            attemptKind === 'objective' ? 'overt-response' : 'covert-recall',
+            item.knowledgeDimension === 'productive-use'
+              ? 'overt-production'
+              : attemptKind === 'objective'
+                ? 'overt-response'
+                : 'covert-recall',
           retrievalFluency: input.retrievalFluency,
           ...(attemptKind === 'objective'
             ? { responseText: input.responseText, judgment }
@@ -834,7 +985,10 @@ function sessionView(
           taskType: item.task.type,
           prompt: item.task.prompt,
           contextQuote: item.task.contextQuote,
-          attemptKind: evidence?.kind ?? calibrationFor(history).nextAttempt,
+          attemptKind:
+            item.knowledgeDimension === 'productive-use'
+              ? 'objective'
+              : (evidence?.kind ?? calibrationFor(history).nextAttempt),
         };
   return {
     id: session.id,
@@ -919,6 +1073,8 @@ function eligibleReviewItems(
       const learningItem = learningItemById.get(item.learningItemId);
       const schedule = scheduleByIdentity.get(scheduleIdentity(item));
       return learningItem?.status === 'active' &&
+        (item.knowledgeDimension !== 'productive-use' ||
+          learningItem.productiveUseIntent === true) &&
         schedule !== undefined &&
         Date.parse(schedule.dueAt) <= Date.parse(asOf) &&
         !pendingReviewItemIds.has(item.id)

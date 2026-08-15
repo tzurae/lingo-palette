@@ -661,14 +661,26 @@ describe('Learning Item store', () => {
       ],
     });
   });
-  it('keeps Productive-use Intent per Item, defaulting off without creating schedule state', async () => {
+  it('keeps Productive-use Intent per Item and synchronizes its schedule port', async () => {
     const storage = memoryStorage();
+    const scheduleCalls: Array<{ learningItemId: string; enabled: boolean }> =
+      [];
     const store = createLearningItemStore(
       storage,
       { async findEligibleSenses() { return null; } },
       {
         id: (kind) => `${kind}-1`,
         now: () => '2026-08-14T13:00:00.000Z',
+        productiveUseSchedule: {
+          async setProductiveUseIntent(
+            learningItemId,
+            enabled,
+            atomicStorageItems,
+          ) {
+            scheduleCalls.push({ learningItemId, enabled });
+            await storage.set(atomicStorageItems);
+          },
+        },
       },
     );
     await store.saveLookup(
@@ -704,5 +716,9 @@ describe('Learning Item store', () => {
       ],
       history: [],
     });
+    expect(scheduleCalls).toEqual([
+      { learningItemId: 'learning-item-1', enabled: true },
+      { learningItemId: 'learning-item-1', enabled: false },
+    ]);
   });
 });

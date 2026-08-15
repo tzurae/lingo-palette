@@ -2573,11 +2573,19 @@ describe('unpacked extension Reading Flow', () => {
     });
   }, 60_000);
 
-  it('reviews usage fit and grammar pattern independently across an offline restart', async () => {
+  it('reviews receptive and productive dimensions across an offline restart with opt-in scheduling', async () => {
     const usageEvidence = BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0];
     const grammarEvidence = BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns[0];
-    if (usageEvidence === undefined || grammarEvidence === undefined) {
-      throw new Error('Expected bundled usage-fit and grammar-pattern evidence.');
+    const collocationEvidence = BUNDLED_ENGLISH_EVIDENCE_PACK.collocations[0];
+    const productiveEvidence =
+      BUNDLED_ENGLISH_EVIDENCE_PACK.contextualMeanings[0];
+    if (
+      usageEvidence === undefined ||
+      grammarEvidence === undefined ||
+      collocationEvidence === undefined ||
+      productiveEvidence === undefined
+    ) {
+      throw new Error('Expected bundled evidence for the mixed Review Session.');
     }
     const approvedItems: ApprovedReviewItem[] = [
       {
@@ -2658,6 +2666,83 @@ describe('unpacked extension Reading Flow', () => {
           validation: { outcome: 'approved', reasons: [] },
         },
       },
+      {
+        version: 1,
+        id: 'review-collocation',
+        learningItemId: 'learning-collocation',
+        knowledgeDimension: 'collocation',
+        task: {
+          type: 'recall',
+          prompt: 'Which verb commonly combines with decision?',
+          contextQuote: 'We must make a decision quickly.',
+          targetAnswers: ['make a decision'],
+          acceptableAlternativeAnswers: [],
+          partialAnswers: ['make'],
+          correctiveExplanation:
+            'The corpus records make and decision in the same sentence.',
+        },
+        provenance: {
+          approvedAt: '2026-08-15T10:02:00.000Z',
+          generation: { model: 'controlled', promptVersion: 'collocation-v1' },
+          validatorVersion: 'collocation-validator-v1',
+          evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK.manifest,
+          relevantEvidence: [collocationEvidence],
+          sourceAuthority: {
+            knowledgeDimension: 'collocation',
+            evidence: [
+              {
+                evidenceId: collocationEvidence.id,
+                sourceId: collocationEvidence.sourceId,
+                sourceVersion: collocationEvidence.sourceVersion,
+                authority: collocationEvidence.authority,
+              },
+            ],
+          },
+          licenseAndAttribution:
+            BUNDLED_ENGLISH_EVIDENCE_PACK.licenseAndAttribution,
+          validation: { outcome: 'approved', reasons: [] },
+        },
+      },
+      {
+        version: 1,
+        id: 'review-productive-use',
+        learningItemId: 'learning-productive-use',
+        knowledgeDimension: 'productive-use',
+        task: {
+          type: 'productive',
+          prompt: 'Write a sentence that uses postpone naturally.',
+          contextQuote: "let's postpone the exam",
+          targetAnswers: ['We postponed the meeting until Friday.'],
+          acceptableAlternativeAnswers: ['They postponed their trip.'],
+          partialAnswers: ['We moved it.'],
+          correctiveExplanation:
+            'Use postpone for moving an event to a later time.',
+        },
+        provenance: {
+          approvedAt: '2026-08-15T10:03:00.000Z',
+          generation: {
+            model: 'controlled',
+            promptVersion: 'productive-use-v1',
+          },
+          validatorVersion: 'productive-use-validator-v1',
+          evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK.manifest,
+          relevantEvidence: [productiveEvidence],
+          sourceAuthority: {
+            knowledgeDimension: 'productive-use',
+            evidence: [
+              {
+                evidenceId: productiveEvidence.id,
+                sourceId: productiveEvidence.sourceId,
+                sourceVersion: productiveEvidence.sourceVersion,
+                authority: productiveEvidence.authority,
+              },
+            ],
+          },
+          licenseAndAttribution:
+            BUNDLED_ENGLISH_EVIDENCE_PACK.licenseAndAttribution,
+          validation: { outcome: 'approved', reasons: [] },
+        },
+      },
     ];
 
     await worker.evaluate(
@@ -2699,6 +2784,26 @@ describe('unpacked extension Reading Flow', () => {
                 createdAt: '2026-08-02T00:00:00.000Z',
                 status: 'active',
               },
+              {
+                version: 1,
+                id: 'learning-collocation',
+                expression: 'decision',
+                normalizedExpression: 'decision',
+                sensePin: null,
+                productiveUseIntent: false,
+                createdAt: '2026-08-03T00:00:00.000Z',
+                status: 'active',
+              },
+              {
+                version: 1,
+                id: 'learning-productive-use',
+                expression: 'postpone actively',
+                normalizedExpression: 'postpone actively',
+                sensePin: null,
+                productiveUseIntent: false,
+                createdAt: '2026-08-04T00:00:00.000Z',
+                status: 'active',
+              },
             ],
             encounters: [],
             mergeSuggestions: [],
@@ -2724,6 +2829,14 @@ describe('unpacked extension Reading Flow', () => {
                 demonstratedCount: 0,
                 intervalStage: 0,
               },
+              {
+                version: 1,
+                learningItemId: 'learning-collocation',
+                knowledgeDimension: 'collocation',
+                dueAt: '2026-08-03T00:00:00.000Z',
+                demonstratedCount: 0,
+                intervalStage: 0,
+              },
             ],
           },
         });
@@ -2741,6 +2854,15 @@ describe('unpacked extension Reading Flow', () => {
 
     let sidePanel = await context.newPage();
     await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await sidePanel.getByRole('tab', { name: 'Saved' }).click();
+    const productiveLearningItem = sidePanel
+      .locator('.learning-item')
+      .filter({ hasText: 'postpone actively' });
+    const productiveIntent = productiveLearningItem.getByRole('checkbox', {
+      name: 'Productive-use Intent',
+    });
+    await productiveIntent.check();
+    await expect.poll(() => productiveIntent.isChecked()).toBe(true);
     await sidePanel.getByRole('tab', { name: 'Review' }).click();
     await sidePanel.getByRole('button', { name: '開始 Review' }).click();
     await expect
@@ -2810,6 +2932,63 @@ describe('unpacked extension Reading Flow', () => {
           .isVisible(),
       )
       .toBe(true);
+    await sidePanel.getByRole('button', { name: '下一題' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Knowledge dimension: 搭配詞', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel
+      .getByRole('textbox', { name: '你的答案' })
+      .fill('make a decision');
+    await sidePanel
+      .getByRole('button', { name: '很流暢地想起來' })
+      .click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Review Judgment: 已展現', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel.screenshot({
+      path: resolve('docs/assets/issue-14-collocation-review.png'),
+      fullPage: true,
+    });
+    await sidePanel.getByRole('button', { name: '下一題' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Knowledge dimension: 主動產出', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Review mode: 主動產出（客觀評分）', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel.screenshot({
+      path: resolve('docs/assets/issue-14-productive-review.png'),
+      fullPage: true,
+    });
+    await sidePanel
+      .getByRole('textbox', { name: '你的答案' })
+      .fill('They postponed their trip.');
+    await sidePanel
+      .getByRole('button', { name: '想起來但有點費力' })
+      .click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Review Judgment: 可接受的替代答案', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
     await sidePanel.getByRole('button', { name: '完成 Review' }).click();
     await expect
       .poll(() => sidePanel.getByText('本次 Review 已完成').isVisible())
@@ -2833,6 +3012,18 @@ describe('unpacked extension Reading Flow', () => {
           knowledgeDimension: 'grammar-pattern',
           intervalStage: 1,
           demonstratedCount: 1,
+        }),
+        expect.objectContaining({
+          learningItemId: 'learning-collocation',
+          knowledgeDimension: 'collocation',
+          intervalStage: 1,
+          demonstratedCount: 1,
+        }),
+        expect.objectContaining({
+          learningItemId: 'learning-productive-use',
+          knowledgeDimension: 'productive-use',
+          intervalStage: 0,
+          demonstratedCount: 0,
         }),
       ]),
     });
@@ -2869,10 +3060,43 @@ describe('unpacked extension Reading Flow', () => {
             ],
           },
         }),
+        expect.objectContaining({
+          version: 2,
+          reviewItemId: 'review-collocation',
+          knowledgeDimension: 'collocation',
+          responseMethod: 'overt-response',
+          judgment: 'demonstrated',
+          sourceAuthority: {
+            knowledgeDimension: 'collocation',
+            evidence: [
+              expect.objectContaining({
+                evidenceId: collocationEvidence.id,
+                authority: collocationEvidence.authority,
+              }),
+            ],
+          },
+        }),
+        expect.objectContaining({
+          version: 2,
+          reviewItemId: 'review-productive-use',
+          knowledgeDimension: 'productive-use',
+          responseMethod: 'overt-production',
+          retrievalFluency: 'recalled-with-effort',
+          judgment: 'acceptable-alternative',
+          sourceAuthority: {
+            knowledgeDimension: 'productive-use',
+            evidence: [
+              expect.objectContaining({
+                evidenceId: productiveEvidence.id,
+                authority: productiveEvidence.authority,
+              }),
+            ],
+          },
+        }),
       ],
     });
     await sidePanel.getByRole('button', { name: '返回 Review' }).click();
-    await sidePanel.getByText('Review Evidence（2）', { exact: true }).click();
+    await sidePanel.getByText('Review Evidence（4）', { exact: true }).click();
     await expect
       .poll(() =>
         sidePanel
@@ -2893,6 +3117,89 @@ describe('unpacked extension Reading Flow', () => {
           .isVisible(),
       )
       .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText(
+            `Source authority: ${collocationEvidence.sourceId} ${collocationEvidence.sourceVersion} · ${collocationEvidence.authority} · ${collocationEvidence.id}`,
+            { exact: true },
+          )
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText(
+            `Source authority: ${productiveEvidence.sourceId} ${productiveEvidence.sourceVersion} · ${productiveEvidence.authority} · ${productiveEvidence.id}`,
+            { exact: true },
+          )
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel.screenshot({
+      path: resolve('docs/assets/issue-14-source-authority.png'),
+      fullPage: true,
+    });
+    const beforeIntentPause = await worker.evaluate(
+      async ([learningKey, schedulesKey, evidenceKey]) =>
+        chrome.storage.local.get([learningKey, schedulesKey, evidenceKey]),
+      [
+        LEARNING_STATE_STORAGE_KEY,
+        REVIEW_SCHEDULES_STORAGE_KEY,
+        REVIEW_EVIDENCE_STORAGE_KEY,
+      ] as const,
+    );
+    await sidePanel.getByRole('tab', { name: 'Saved' }).click();
+    const resumedProductiveIntent = sidePanel
+      .locator('.learning-item')
+      .filter({ hasText: 'postpone actively' })
+      .getByRole('checkbox', { name: 'Productive-use Intent' });
+    await resumedProductiveIntent.uncheck();
+    await expect.poll(() => resumedProductiveIntent.isChecked()).toBe(false);
+    await sidePanel.screenshot({
+      path: resolve('docs/assets/issue-14-productive-paused.png'),
+      fullPage: true,
+    });
+    const pausedState = await worker.evaluate(
+      async ([learningKey, schedulesKey, evidenceKey]) =>
+        chrome.storage.local.get([learningKey, schedulesKey, evidenceKey]),
+      [
+        LEARNING_STATE_STORAGE_KEY,
+        REVIEW_SCHEDULES_STORAGE_KEY,
+        REVIEW_EVIDENCE_STORAGE_KEY,
+      ] as const,
+    );
+    expect(
+      (
+        pausedState[LEARNING_STATE_STORAGE_KEY] as {
+          learningItems: Array<{
+            id: string;
+            productiveUseIntent: boolean;
+          }>;
+        }
+      ).learningItems.find(({ id }) => id === 'learning-productive-use')
+        ?.productiveUseIntent,
+    ).toBe(false);
+    expect(pausedState[REVIEW_SCHEDULES_STORAGE_KEY]).toEqual(
+      beforeIntentPause[REVIEW_SCHEDULES_STORAGE_KEY],
+    );
+    expect(pausedState[REVIEW_EVIDENCE_STORAGE_KEY]).toEqual(
+      beforeIntentPause[REVIEW_EVIDENCE_STORAGE_KEY],
+    );
+    await resumedProductiveIntent.check();
+    await expect.poll(() => resumedProductiveIntent.isChecked()).toBe(true);
+    const resumedState = await worker.evaluate(
+      async ([schedulesKey, evidenceKey]) =>
+        chrome.storage.local.get([schedulesKey, evidenceKey]),
+      [REVIEW_SCHEDULES_STORAGE_KEY, REVIEW_EVIDENCE_STORAGE_KEY] as const,
+    );
+    expect(resumedState[REVIEW_SCHEDULES_STORAGE_KEY]).toEqual(
+      beforeIntentPause[REVIEW_SCHEDULES_STORAGE_KEY],
+    );
+    expect(resumedState[REVIEW_EVIDENCE_STORAGE_KEY]).toEqual(
+      beforeIntentPause[REVIEW_EVIDENCE_STORAGE_KEY],
+    );
   }, 60_000);
 });
 function extensionOriginFrom(extensionWorker: Worker): string {

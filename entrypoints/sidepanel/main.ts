@@ -88,10 +88,13 @@ browser.storage.onChanged.addListener((changes, areaName) => {
   if (changes[LOOKUP_RECORDS_STORAGE_KEY] !== undefined) {
     void loadRecent();
   }
-  if (changes[LEARNING_STATE_STORAGE_KEY] !== undefined) {
+  const learningStateChanged =
+    changes[LEARNING_STATE_STORAGE_KEY] !== undefined;
+  if (learningStateChanged) {
     void loadSaved();
   }
   if (
+    learningStateChanged ||
     changes[APPROVED_REVIEW_ITEMS_STORAGE_KEY] !== undefined ||
     changes[REVIEW_EVIDENCE_STORAGE_KEY] !== undefined ||
     changes[REVIEW_REVALIDATION_MARKERS_STORAGE_KEY] !== undefined ||
@@ -369,7 +372,11 @@ function renderReviewSession(
     ),
     labelledText(
       'Review mode',
-      current.attemptKind === 'objective' ? '客觀校準' : '自我評估',
+      current.knowledgeDimension === 'productive-use'
+        ? '主動產出（客觀評分）'
+        : current.attemptKind === 'objective'
+          ? '客觀校準'
+          : '自我評估',
     ),
     element('h3', current.prompt),
     element('p', current.contextQuote, 'context-quote'),
@@ -380,9 +387,11 @@ function renderReviewSession(
     card.append(
       element(
         'p',
-        current.attemptKind === 'objective'
-          ? '請先回想、輸入你的答案，再選擇最符合剛才回想狀態的 Retrieval Fluency。'
-          : '請先在心中回想，再選擇最符合剛才回想狀態的 Retrieval Fluency。',
+        current.knowledgeDimension === 'productive-use'
+          ? '請輸入完整產出；Retrieval Fluency 只記錄主觀感受，Review Judgment 仍以輸入內容客觀評分。'
+          : current.attemptKind === 'objective'
+            ? '請先回想、輸入你的答案，再選擇最符合剛才回想狀態的 Retrieval Fluency。'
+            : '請先在心中回想，再選擇最符合剛才回想狀態的 Retrieval Fluency。',
       ),
     );
     let responseInput: HTMLTextAreaElement | null = null;
@@ -1233,7 +1242,9 @@ function reviewKnowledgeDimensionLabel(
 ): string {
   if (value === 'contextual-meaning') return '語境意義';
   if (value === 'usage-fit') return '語境用法適切性';
-  return '文法模式';
+  if (value === 'grammar-pattern') return '文法模式';
+  if (value === 'collocation') return '搭配詞';
+  return '主動產出';
 }
 
 function retrievalFluencyLabel(value: RetrievalFluency): string {
