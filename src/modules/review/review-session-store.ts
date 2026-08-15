@@ -356,6 +356,20 @@ export function createReviewSessionStore(
       intervalStage: number;
     },
   ): Promise<void>;
+  activatePrepared(input: {
+    item: ApprovedReviewItem;
+    replacedReviewItemId: string | null;
+    schedule: {
+      dueAt: string;
+      demonstratedCount: number;
+      intervalStage: number;
+    };
+  }): Promise<void>;
+  preparationSnapshot(): Promise<{
+    approvedItems: readonly ApprovedReviewItem[];
+    schedules: readonly ReviewSchedule[];
+    pendingReviewItemIds: readonly string[];
+  }>;
   setProductiveUseIntent(
     learningItemId: string,
     enabled: boolean,
@@ -455,6 +469,122 @@ export function createReviewSessionStore(
               : [...scheduleState.records, nextSchedule],
           },
         });
+      });
+    },
+
+    activatePrepared({ item, replacedReviewItemId, schedule }) {
+      return serialized(async () => {
+        const approvedItem = approvedReviewItemSchema.parse(
+          item,
+        ) as ApprovedReviewItem;
+        const [approvedState, scheduleState] = await Promise.all([
+          loadState(
+            storage,
+            APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+            approvedStateSchema,
+            emptyApprovedState,
+          ) as Promise<{ version: 1; records: ApprovedReviewItem[] }>,
+          loadState(
+            storage,
+            REVIEW_SCHEDULES_STORAGE_KEY,
+            scheduleStateSchema,
+            emptyScheduleState,
+          ),
+        ]);
+        const replaced =
+          replacedReviewItemId === null
+            ? null
+            : approvedState.records.find(
+                (record) => record.id === replacedReviewItemId,
+              );
+        if (
+          replacedReviewItemId !== null &&
+          (replaced == null ||
+            replaced.learningItemId !== approvedItem.learningItemId ||
+            replaced.knowledgeDimension !==
+              approvedItem.knowledgeDimension)
+        ) {
+          throw new Error(
+            'Prepared Review replacement must match the existing Learning Item and Knowledge Dimension.',
+          );
+        }
+        const existing = approvedState.records.find(
+          (record) => record.id === approvedItem.id,
+        );
+        if (
+          existing !== undefined &&
+          (existing.learningItemId !== approvedItem.learningItemId ||
+            existing.knowledgeDimension !==
+              approvedItem.knowledgeDimension)
+        ) {
+          throw new Error(
+            `Prepared Review Item ${approvedItem.id} changed identity.`,
+          );
+        }
+        const nextSchedule = scheduleSchema.parse({
+          version: 1,
+          learningItemId: approvedItem.learningItemId,
+          knowledgeDimension: approvedItem.knowledgeDimension,
+          ...schedule,
+        });
+        await storage.set({
+          [APPROVED_REVIEW_ITEMS_STORAGE_KEY]: {
+            version: 1,
+            records:
+              existing === undefined
+                ? [...approvedState.records, approvedItem]
+                : approvedState.records,
+          },
+          [REVIEW_SCHEDULES_STORAGE_KEY]: {
+            version: 1,
+            records: [
+              ...scheduleState.records.filter(
+                (record) =>
+                  scheduleIdentity(record) !==
+                  scheduleIdentity(nextSchedule),
+              ),
+              nextSchedule,
+            ],
+          },
+        });
+      });
+    },
+
+    preparationSnapshot() {
+      return serialized(async () => {
+        const [approvedState, scheduleState, markers] =
+          await Promise.all([
+            loadState(
+              storage,
+              APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+              approvedStateSchema,
+              emptyApprovedState,
+            ) as Promise<{
+              version: 1;
+              records: ApprovedReviewItem[];
+            }>,
+            loadState(
+              storage,
+              REVIEW_SCHEDULES_STORAGE_KEY,
+              scheduleStateSchema,
+              emptyScheduleState,
+            ),
+            loadOptionalState(
+              storage,
+              REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+              revalidationMarkersSchema,
+            ),
+          ]);
+        return {
+          approvedItems: approvedState.records,
+          schedules: scheduleState.records,
+          pendingReviewItemIds:
+            markers === null
+              ? []
+              : Object.values(markers.records).map(
+                  (marker) => marker.reviewItemId,
+                ),
+        };
       });
     },
 

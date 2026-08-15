@@ -1262,4 +1262,57 @@ describe('Review Session store', () => {
       'Review Item source authority must match its Knowledge Dimension.',
     );
   });
+
+  it('atomically activates a prepared replacement and updates its dimension schedule', async () => {
+    const storage = memoryStorage();
+    const store = createReviewSessionStore(storage);
+    const oldItem = approvedItem('review-old', 'learning-1');
+    const replacement = approvedItem('review-new', 'learning-1');
+    await store.approve(oldItem, {
+      dueAt: '2026-08-15T00:00:00.000Z',
+      demonstratedCount: 2,
+      intervalStage: 3,
+    });
+    await storage.set({
+      [REVIEW_REVALIDATION_MARKERS_STORAGE_KEY]: {
+        version: 1,
+        records: {
+          [oldItem.id]: {
+            reviewItemId: oldItem.id,
+            status: 'pending',
+            evidencePackVersion:
+              BUNDLED_ENGLISH_EVIDENCE_PACK.manifest.version,
+            markedAt: '2026-08-15T00:00:00.000Z',
+          },
+        },
+      },
+    });
+
+    await store.activatePrepared({
+      item: replacement,
+      replacedReviewItemId: oldItem.id,
+      schedule: {
+        dueAt: '2026-08-16T00:00:00.000Z',
+        demonstratedCount: 0,
+        intervalStage: 0,
+      },
+    });
+
+    await expect(store.preparationSnapshot()).resolves.toMatchObject({
+      approvedItems: [
+        { id: 'review-old' },
+        { id: 'review-new' },
+      ],
+      schedules: [
+        {
+          learningItemId: 'learning-1',
+          knowledgeDimension: 'contextual-meaning',
+          dueAt: '2026-08-16T00:00:00.000Z',
+          demonstratedCount: 0,
+          intervalStage: 0,
+        },
+      ],
+      pendingReviewItemIds: ['review-old'],
+    });
+  });
 });

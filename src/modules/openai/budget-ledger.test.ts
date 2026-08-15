@@ -263,6 +263,136 @@ describe('daily provider budget ledger', () => {
     ).resolves.toMatchObject({ status: 'reserved' });
   });
 
+  it('caps background reservations at 30% while preserving foreground capacity', async () => {
+    const ledger = createBudgetLedger(memoryStorage(), {
+      now: () => new Date('2026-08-13T10:00:00'),
+      id: (() => {
+        let next = 0;
+        return () => `shared-${++next}`;
+      })(),
+    });
+    await ledger.configure({ tokenLimit: 10_000, estimatedCostUsdLimit: 1 });
+
+    const [background, overCap, foreground] = await Promise.all([
+      ledger.reserve({
+        scope: 'background',
+        tokens: 3_000,
+        estimatedCostUsd: 0.3,
+      }),
+      ledger.reserve({
+        scope: 'background',
+        tokens: 1,
+        estimatedCostUsd: 0.01,
+      }),
+      ledger.reserve({
+        scope: 'foreground',
+        tokens: 7_000,
+        estimatedCostUsd: 0.7,
+      }),
+    ]);
+
+    expect(background).toMatchObject({
+      status: 'reserved',
+      reservation: { scope: 'background' },
+    });
+    expect(overCap).toEqual({
+      status: 'blocked',
+      kind: 'token-budget',
+      scope: 'background',
+    });
+    expect(foreground).toMatchObject({
+      status: 'reserved',
+      reservation: { scope: 'foreground' },
+    });
+    await expect(ledger.snapshot()).resolves.toMatchObject({
+      reserved: { tokens: 10_000, estimatedCostUsd: 1 },
+      background: {
+        used: { totalTokens: 0, estimatedCostUsd: 0 },
+        reserved: { tokens: 3_000, estimatedCostUsd: 0.3 },
+        limit: { tokens: 3_000, estimatedCostUsd: 0.3 },
+      },
+    });
+  });
+
+  it('keeps unknown-price background work token-limited without fabricating cost', async () => {
+    const ledger = createBudgetLedger(memoryStorage(), {
+      now: () => new Date('2026-08-13T10:00:00'),
+      id: () => 'background-custom-model',
+    });
+    await ledger.configure({ tokenLimit: 10_000, estimatedCostUsdLimit: 1 });
+
+    await expect(
+      ledger.reserve({
+        scope: 'background',
+        tokens: 3_000,
+        estimatedCostUsd: null,
+      }),
+    ).resolves.toMatchObject({
+      status: 'reserved',
+      reservation: { scope: 'background', estimatedCostUsd: null },
+    });
+    await expect(
+      ledger.reserve({
+        scope: 'background',
+        tokens: 1,
+        estimatedCostUsd: null,
+      }),
+    ).resolves.toEqual({
+      status: 'blocked',
+      kind: 'token-budget',
+      scope: 'background',
+    });
+  });
+
+  it('resets reconciled background usage at the next local day', async () => {
+    let now = new Date('2026-08-13T23:59:00');
+    const ledger = createBudgetLedger(memoryStorage(), {
+      now: () => now,
+      id: (() => {
+        let next = 0;
+        return () => `background-day-${++next}`;
+      })(),
+    });
+    await ledger.configure({ tokenLimit: 10_000, estimatedCostUsdLimit: 1 });
+    const first = await ledger.reserve({
+      scope: 'background',
+      tokens: 3_000,
+      estimatedCostUsd: 0.3,
+    });
+    if (first.status !== 'reserved') throw new Error('Expected reservation.');
+    await ledger.reconcile(first.reservation, {
+      inputTokens: 2_000,
+      cachedInputTokens: 0,
+      outputTokens: 1_000,
+      reasoningTokens: 0,
+      totalTokens: 3_000,
+      estimatedCostUsd: 0.3,
+    });
+    await expect(
+      ledger.reserve({
+        scope: 'background',
+        tokens: 1,
+        estimatedCostUsd: 0.01,
+      }),
+    ).resolves.toMatchObject({ status: 'blocked', scope: 'background' });
+
+    now = new Date('2026-08-14T00:01:00');
+    await expect(ledger.snapshot()).resolves.toMatchObject({
+      activeDate: '2026-08-14',
+      background: {
+        used: { totalTokens: 0, estimatedCostUsd: 0 },
+        reserved: { tokens: 0, estimatedCostUsd: 0 },
+      },
+    });
+    await expect(
+      ledger.reserve({
+        scope: 'background',
+        tokens: 3_000,
+        estimatedCostUsd: 0.3,
+      }),
+    ).resolves.toMatchObject({ status: 'reserved' });
+  });
+
   it('zero in either limit explicitly disables provider Actions', async () => {
     const ledger = createBudgetLedger(memoryStorage(), {
       now: () => new Date('2026-08-13T10:00:00'),

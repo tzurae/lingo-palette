@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const OPENAI_BUDGET_SETTINGS_STORAGE_KEY = 'openAiBudgetSettings';
 export const OPENAI_BUDGET_LEDGER_STORAGE_KEY = 'openAiBudgetLedger';
+export const BACKGROUND_BUDGET_SHARE = 0.3;
 
 export const DEFAULT_DAILY_BUDGET: DailyBudget = {
   tokenLimit: 100_000,
@@ -26,6 +27,7 @@ const reservationSchema = z.object({
   tokens: z.number().int().positive(),
   estimatedCostUsd: z.number().positive().nullable(),
   ownerId: z.string().min(1).optional(),
+  scope: z.enum(['foreground', 'background']).optional(),
 });
 const ledgerUsageSchema = usageSchema.extend({
   knownEstimatedCostUsd: z.number().nonnegative().optional(),
@@ -34,6 +36,7 @@ const ledgerSchema = z.object({
   activeDate: z.string(),
   used: ledgerUsageSchema,
   reservations: z.record(z.string(), reservationSchema),
+  backgroundUsed: ledgerUsageSchema.optional(),
 });
 
 export type DailyBudget = z.infer<typeof dailyBudgetSchema>;
@@ -43,6 +46,7 @@ type LedgerUsage = ProviderUsage & { knownEstimatedCostUsd: number };
 type Ledger = {
   activeDate: string;
   used: LedgerUsage;
+  backgroundUsed: LedgerUsage;
   reservations: Record<string, BudgetReservation>;
 };
 
@@ -57,6 +61,11 @@ export type BudgetSnapshot = {
   nextLocalReset: string;
   used: ProviderUsage;
   reserved: { tokens: number; estimatedCostUsd: number };
+  background: {
+    used: ProviderUsage;
+    reserved: { tokens: number; estimatedCostUsd: number };
+    limit: { tokens: number; estimatedCostUsd: number };
+  };
 };
 
 type ReserveResult =
@@ -64,6 +73,7 @@ type ReserveResult =
   | {
       status: 'blocked';
       kind: 'provider-disabled' | 'token-budget' | 'estimated-cost-budget';
+      scope?: 'background';
     };
 
 const emptyUsage = (): LedgerUsage => ({
@@ -105,6 +115,7 @@ export function createBudgetLedger(
   configure(settings: DailyBudget): Promise<BudgetSnapshot>;
   snapshot(): Promise<BudgetSnapshot>;
   reserve(request: {
+    scope?: 'foreground' | 'background';
     tokens: number;
     estimatedCostUsd: number | null;
   }): Promise<ReserveResult>;
@@ -148,16 +159,19 @@ export function createBudgetLedger(
     let ledger: Ledger = parsedLedger.success
       ? {
           ...parsedLedger.data,
-          used: {
-            ...parsedLedger.data.used,
-            knownEstimatedCostUsd:
-              parsedLedger.data.used.knownEstimatedCostUsd ??
-              parsedLedger.data.used.estimatedCostUsd ??
-              0,
-          },
+          used: normalizeLedgerUsage(parsedLedger.data.used),
+          backgroundUsed: normalizeLedgerUsage(
+            parsedLedger.data.backgroundUsed ?? emptyUsage(),
+          ),
         }
-      : { activeDate: today, used: emptyUsage(), reservations: {} };
-    let changed = !parsedLedger.success;
+      : {
+          activeDate: today,
+          used: emptyUsage(),
+          backgroundUsed: emptyUsage(),
+          reservations: {},
+        };
+    let changed =
+      !parsedLedger.success || parsedLedger.data.backgroundUsed === undefined;
     for (const [reservationId, reservation] of Object.entries(
       ledger.reservations,
     )) {
@@ -170,6 +184,7 @@ export function createBudgetLedger(
       ledger = {
         activeDate: today,
         used: emptyUsage(),
+        backgroundUsed: emptyUsage(),
         reservations: ledger.reservations,
       };
       changed = true;
@@ -185,8 +200,15 @@ export function createBudgetLedger(
     ledger: Ledger,
   ): BudgetSnapshot => {
     const reservations = Object.values(ledger.reservations);
+    const backgroundReservations = reservations.filter(
+      (reservation) => reservation.scope === 'background',
+    );
     const { knownEstimatedCostUsd: _knownEstimatedCostUsd, ...used } =
       ledger.used;
+    const {
+      knownEstimatedCostUsd: _backgroundKnownEstimatedCostUsd,
+      ...backgroundUsed
+    } = ledger.backgroundUsed;
     const year = Number(ledger.activeDate.slice(0, 4));
     const month = Number(ledger.activeDate.slice(5, 7));
     const day = Number(ledger.activeDate.slice(8, 10));
@@ -204,6 +226,27 @@ export function createBudgetLedger(
             0,
           ),
         ),
+      },
+      background: {
+        used: backgroundUsed,
+        reserved: {
+          tokens: backgroundReservations.reduce(
+            (sum, item) => sum + item.tokens,
+            0,
+          ),
+          estimatedCostUsd: roundCost(
+            backgroundReservations.reduce(
+              (sum, item) => sum + (item.estimatedCostUsd ?? 0),
+              0,
+            ),
+          ),
+        },
+        limit: {
+          tokens: Math.floor(settings.tokenLimit * BACKGROUND_BUDGET_SHARE),
+          estimatedCostUsd: roundCost(
+            settings.estimatedCostUsdLimit * BACKGROUND_BUDGET_SHARE,
+          ),
+        },
       },
     };
   };
@@ -237,19 +280,55 @@ export function createBudgetLedger(
         ) {
           throw new Error('Budget reservation cost must be positive or null.');
         }
+        const scope = request.scope ?? 'foreground';
         const { settings, ledger } = await load();
         if (
           settings.tokenLimit === 0 ||
           settings.estimatedCostUsdLimit === 0
         ) {
-          return { status: 'blocked', kind: 'provider-disabled' } as const;
+          return {
+            status: 'blocked',
+            kind: 'provider-disabled',
+            ...(scope === 'background' ? { scope } : {}),
+          } as const;
         }
         const snapshot = toSnapshot(settings, ledger);
+        if (
+          scope === 'background' &&
+          ledger.backgroundUsed.totalTokens +
+            snapshot.background.reserved.tokens +
+            request.tokens >
+            snapshot.background.limit.tokens
+        ) {
+          return {
+            status: 'blocked',
+            kind: 'token-budget',
+            scope,
+          } as const;
+        }
+        if (
+          scope === 'background' &&
+          request.estimatedCostUsd !== null &&
+          ledger.backgroundUsed.knownEstimatedCostUsd +
+            snapshot.background.reserved.estimatedCostUsd +
+            request.estimatedCostUsd >
+            snapshot.background.limit.estimatedCostUsd
+        ) {
+          return {
+            status: 'blocked',
+            kind: 'estimated-cost-budget',
+            scope,
+          } as const;
+        }
         if (
           ledger.used.totalTokens + snapshot.reserved.tokens + request.tokens >
           settings.tokenLimit
         ) {
-          return { status: 'blocked', kind: 'token-budget' } as const;
+          return {
+            status: 'blocked',
+            kind: 'token-budget',
+            ...(scope === 'background' ? { scope } : {}),
+          } as const;
         }
         if (
           request.estimatedCostUsd !== null &&
@@ -261,6 +340,7 @@ export function createBudgetLedger(
           return {
             status: 'blocked',
             kind: 'estimated-cost-budget',
+            ...(scope === 'background' ? { scope } : {}),
           } as const;
         }
         const reservation: BudgetReservation = {
@@ -269,6 +349,7 @@ export function createBudgetLedger(
           tokens: request.tokens,
           estimatedCostUsd: request.estimatedCostUsd,
           ownerId,
+          scope,
         };
         ledger.reservations[reservation.id] = reservation;
         await storage.set({ [OPENAI_BUDGET_LEDGER_STORAGE_KEY]: ledger });
@@ -280,29 +361,16 @@ export function createBudgetLedger(
       await serialized(async () => {
         const parsedUsage = usageSchema.parse(usage);
         const { ledger } = await load();
-        if (ledger.reservations[reservation.id] === undefined) return;
+        const activeReservation = ledger.reservations[reservation.id];
+        if (activeReservation === undefined) return;
         delete ledger.reservations[reservation.id];
-        ledger.used = {
-          inputTokens: ledger.used.inputTokens + parsedUsage.inputTokens,
-          cachedInputTokens:
-            ledger.used.cachedInputTokens + parsedUsage.cachedInputTokens,
-          outputTokens: ledger.used.outputTokens + parsedUsage.outputTokens,
-          reasoningTokens:
-            ledger.used.reasoningTokens + parsedUsage.reasoningTokens,
-          totalTokens: ledger.used.totalTokens + parsedUsage.totalTokens,
-          estimatedCostUsd:
-            ledger.used.estimatedCostUsd === null ||
-            parsedUsage.estimatedCostUsd === null
-              ? null
-              : roundCost(
-                  ledger.used.estimatedCostUsd +
-                    parsedUsage.estimatedCostUsd,
-                ),
-          knownEstimatedCostUsd: roundCost(
-            ledger.used.knownEstimatedCostUsd +
-              (parsedUsage.estimatedCostUsd ?? 0),
-          ),
-        };
+        ledger.used = addUsage(ledger.used, parsedUsage);
+        if (activeReservation.scope === 'background') {
+          ledger.backgroundUsed = addUsage(
+            ledger.backgroundUsed,
+            parsedUsage,
+          );
+        }
         await storage.set({ [OPENAI_BUDGET_LEDGER_STORAGE_KEY]: ledger });
       });
     },
@@ -315,6 +383,33 @@ export function createBudgetLedger(
         await storage.set({ [OPENAI_BUDGET_LEDGER_STORAGE_KEY]: ledger });
       });
     },
+  };
+}
+
+function normalizeLedgerUsage(
+  usage: z.infer<typeof ledgerUsageSchema>,
+): LedgerUsage {
+  return {
+    ...usage,
+    knownEstimatedCostUsd:
+      usage.knownEstimatedCostUsd ?? usage.estimatedCostUsd ?? 0,
+  };
+}
+
+function addUsage(current: LedgerUsage, added: ProviderUsage): LedgerUsage {
+  return {
+    inputTokens: current.inputTokens + added.inputTokens,
+    cachedInputTokens: current.cachedInputTokens + added.cachedInputTokens,
+    outputTokens: current.outputTokens + added.outputTokens,
+    reasoningTokens: current.reasoningTokens + added.reasoningTokens,
+    totalTokens: current.totalTokens + added.totalTokens,
+    estimatedCostUsd:
+      current.estimatedCostUsd === null || added.estimatedCostUsd === null
+        ? null
+        : roundCost(current.estimatedCostUsd + added.estimatedCostUsd),
+    knownEstimatedCostUsd: roundCost(
+      current.knownEstimatedCostUsd + (added.estimatedCostUsd ?? 0),
+    ),
   };
 }
 

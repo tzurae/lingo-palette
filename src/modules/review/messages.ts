@@ -3,12 +3,14 @@ import type {
   ReviewSessionView,
   ReviewSchedule,
 } from './review-session-store';
+import type { ReviewPreparationSnapshot } from './review-preparation-queue';
 
 export type ReviewSessionSnapshot = Readonly<{
   eligibleCount: number;
   activeSession: ReviewSessionView | null;
   schedules: readonly ReviewSchedule[];
   evidence: readonly RecordedReviewEvidence[];
+  preparation: ReviewPreparationSnapshot;
 }>;
 
 export type ReviewRequest =
@@ -23,7 +25,8 @@ export type ReviewRequest =
         | 'recalled-fluently';
       responseText?: string;
     }
-  | { type: 'advance-review-session'; sessionId: string };
+  | { type: 'advance-review-session'; sessionId: string }
+  | { type: 'resume-review-preparation'; jobId: string };
 
 export type ReviewResponse =
   | { status: 'loaded'; snapshot: ReviewSessionSnapshot }
