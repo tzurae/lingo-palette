@@ -87,10 +87,33 @@ export type GrammarPatternEvidence = {
     | 'pos-aware-corpus-attestation';
 };
 
+export type CollocationEvidence = {
+  id: string;
+  sourceId: string;
+  sourceVersion: string;
+  authority: 'corpus-collocation';
+  targetExpression: string;
+  collocate: string;
+  partOfSpeech: string;
+  targetMorphologies: readonly string[];
+  window: { type: 'same-sentence' };
+  rawCount: number;
+  association: { metric: 'log-likelihood'; value: number };
+  minimumRawCount: number;
+  corpus: {
+    name: string;
+    language: 'en';
+    sentenceCount: number;
+    tokenCount: number;
+    sourceUrl: string;
+  };
+};
+
 export type ReviewAuthorityEvidence =
   | ContextualMeaningEvidence
   | UsageFitEvidence
-  | GrammarPatternEvidence;
+  | GrammarPatternEvidence
+  | CollocationEvidence;
 
 export type EvidenceLicense = {
   id: string;
@@ -102,6 +125,7 @@ export type PinnedEnglishEvidencePack = {
   contextualMeanings: readonly ContextualMeaningEvidence[];
   usageFits: readonly UsageFitEvidence[];
   grammarPatterns: readonly GrammarPatternEvidence[];
+  collocations: readonly CollocationEvidence[];
   licenses: readonly EvidenceLicense[];
   licenseAndAttribution: readonly LicenseAndAttribution[];
 };
@@ -114,10 +138,10 @@ export const BUNDLED_ENGLISH_EVIDENCE_PACK = {
     language: 'en',
     minimumExtensionVersion: '0.0.0',
     compression: 'gzip',
-    compressedSizeBytes: 7_654,
-    installedSizeBytes: 23_627,
+    compressedSizeBytes: 7_972,
+    installedSizeBytes: 24_894,
     contentIdentitySha256:
-      '9597180e44214c2085173797a718709137f92f44cc0136fc99264697960b5d63',
+      'd0daa1c1d86c284338ba9cb47f21f957d58975f9cc1f170b4bc393c30a8a8fc1',
     contentHashes: [
       {
         path: 'contextual-meanings.json',
@@ -138,10 +162,16 @@ export const BUNDLED_ENGLISH_EVIDENCE_PACK = {
           '9f4b322e09aecf500741a90de5158139750f030e70cacac9bb1318f40779c660',
       },
       {
-        path: 'license-and-attribution.json',
-        byteSize: 1_051,
+        path: 'collocations.json',
+        byteSize: 557,
         sha256:
-          '3e8104d8cf265a153e341e384a9edab62a7cc4cc852e10bb1c0a7c83cd287bbe',
+          'c2a8811769df42cf72c5b0ac78aef8d1d87faa80445974c7c76ad066d3ef5b36',
+      },
+      {
+        path: 'license-and-attribution.json',
+        byteSize: 1_761,
+        sha256:
+          'a9213b35b65f1f45a346e97e82bea3a7a4e388ef00677843b7043d846c4d3571',
       },
       {
         path: 'licenses/OEWN-2025-LICENSE.md',
@@ -180,6 +210,14 @@ export const BUNDLED_ENGLISH_EVIDENCE_PACK = {
         sha256:
           '7d749f6e2c39e6970e4997839dcf6e42fd281f3c2fae0171d2192bae8cfa4b51',
         licenseIds: ['CC-BY-4.0', 'Princeton-WordNet-3.1'],
+      },
+      {
+        id: 'leipzig-eng-news',
+        version: '2023-100K',
+        asset: 'eng_news_2023_100K.tar.gz',
+        sha256:
+          'b425663b43612a454461188e655a93701866b1597a28933e2a25d033e51410c56',
+        licenseIds: ['CC-BY-4.0'],
       },
     ],
   },
@@ -237,6 +275,29 @@ export const BUNDLED_ENGLISH_EVIDENCE_PACK = {
       authority: 'source-recorded-frame',
     },
   ],
+  collocations: [
+    {
+      id: 'leipzig-eng-news-2023:decision-make',
+      sourceId: 'leipzig-eng-news',
+      sourceVersion: '2023-100K',
+      authority: 'corpus-collocation',
+      targetExpression: 'decision',
+      collocate: 'make',
+      partOfSpeech: 'noun',
+      targetMorphologies: ['base-form:decision'],
+      window: { type: 'same-sentence' },
+      rawCount: 31,
+      association: { metric: 'log-likelihood', value: 45.41 },
+      minimumRawCount: 5,
+      corpus: {
+        name: 'Leipzig English News Corpus 2023',
+        language: 'en',
+        sentenceCount: 100_000,
+        tokenCount: 2_218_395,
+        sourceUrl: 'https://wortschatz.uni-leipzig.de/en/download/English',
+      },
+    },
+  ],
   licenses: [
     { id: 'CC-BY-4.0', text: oewnLicenseText },
     { id: 'Princeton-WordNet-3.1', text: wordNetLicenseText },
@@ -269,6 +330,26 @@ export const BUNDLED_ENGLISH_EVIDENCE_PACK = {
         'https://github.com/globalwordnet/english-wordnet/tree/2025-edition',
       notice:
         'This resource is derived from Princeton WordNet under the WordNet License and further developed under the Creative Commons Attribution 4.0 International License. Attribution is required for both Princeton WordNet and the Open English WordNet team.',
+    },
+    {
+      sourceId: 'leipzig-eng-news',
+      sourceName: 'Leipzig Corpora Collection — English News Corpus',
+      sourceVersion: '2023-100K',
+      attribution:
+        'Leipzig Corpora Collection: English News corpus based on material from 2023, Universität Leipzig.',
+      licenseIdentifiers: ['CC-BY-4.0'],
+      licenseTextHashes: [
+        {
+          licenseIdentifier: 'CC-BY-4.0',
+          sha256:
+            '672cc8b5663e8dc74c4b07a9dcf477193853575b119908fd3dc0aeeb60a9dbbb',
+        },
+      ],
+      licenseUrls: ['https://creativecommons.org/licenses/by/4.0/'],
+      sourceUrl:
+        'https://wortschatz.uni-leipzig.de/en/download/English',
+      notice:
+        'The downloadable Leipzig corpus is licensed under CC BY 4.0. This bundled record contains derived same-sentence co-occurrence statistics, not corpus sentences.',
     },
   ],
 } as const satisfies PinnedEnglishEvidencePack;

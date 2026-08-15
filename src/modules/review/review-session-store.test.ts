@@ -26,7 +26,10 @@ function memoryStorage() {
 function approvedItem(
   id: string,
   learningItemId: string,
-): ApprovedReviewItem {
+): ApprovedReviewItem & {
+  knowledgeDimension: 'contextual-meaning';
+  task: { type: 'recall' };
+} {
   return {
     version: 1,
     id,
@@ -57,29 +60,46 @@ function approvedItem(
 function approvedDimensionItem(
   id: string,
   learningItemId: string,
-  knowledgeDimension: 'usage-fit' | 'grammar-pattern',
+  knowledgeDimension:
+    | 'usage-fit'
+    | 'grammar-pattern'
+    | 'collocation'
+    | 'productive-use',
 ): ApprovedReviewItem {
   const base = approvedItem(id, learningItemId);
   const relevantEvidence =
     knowledgeDimension === 'usage-fit'
       ? [...BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits]
-      : [...BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns];
+      : knowledgeDimension === 'grammar-pattern'
+        ? [...BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns]
+        : knowledgeDimension === 'collocation'
+          ? [...BUNDLED_ENGLISH_EVIDENCE_PACK.collocations]
+          : [...BUNDLED_ENGLISH_EVIDENCE_PACK.contextualMeanings];
+  const provenance = {
+    ...base.provenance,
+    relevantEvidence,
+    sourceAuthority: {
+      knowledgeDimension,
+      evidence: relevantEvidence.map((entry) => ({
+        evidenceId: entry.id,
+        sourceId: entry.sourceId,
+        sourceVersion: entry.sourceVersion,
+        authority: entry.authority,
+      })),
+    },
+  };
+  if (knowledgeDimension === 'productive-use') {
+    return {
+      ...base,
+      knowledgeDimension,
+      task: { ...base.task, type: 'productive' },
+      provenance,
+    };
+  }
   return {
     ...base,
     knowledgeDimension,
-    provenance: {
-      ...base.provenance,
-      relevantEvidence,
-      sourceAuthority: {
-        knowledgeDimension,
-        evidence: relevantEvidence.map((entry) => ({
-          evidenceId: entry.id,
-          sourceId: entry.sourceId,
-          sourceVersion: entry.sourceVersion,
-          authority: entry.authority,
-        })),
-      },
-    },
+    provenance,
   };
 }
 
@@ -985,6 +1005,214 @@ describe('Review Session store', () => {
         },
       ],
     });
+  });
+
+  it('requires an overt productive response and grades valid alternatives without coupling receptive schedules', async () => {
+    const storage = memoryStorage();
+    let nextId = 0;
+    const store = createReviewSessionStore(storage, {
+      id: () => `productive-evidence-${nextId++}`,
+      now: () => '2026-08-15T12:00:00.000Z',
+    });
+    const productiveItem = approvedDimensionItem(
+      'review-productive',
+      'learning-productive',
+      'productive-use',
+    );
+    await store.approve(productiveItem, {
+      dueAt: '2026-08-10T00:00:00.000Z',
+      demonstratedCount: 0,
+      intervalStage: 0,
+    });
+    await store.approve(
+      approvedDimensionItem(
+        'review-collocation',
+        'learning-collocation',
+        'collocation',
+      ),
+      {
+        dueAt: '2026-08-11T00:00:00.000Z',
+        demonstratedCount: 2,
+        intervalStage: 4,
+      },
+    );
+    const learningItems = [
+      {
+        id: 'learning-productive',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        status: 'active' as const,
+        productiveUseIntent: true,
+      },
+      {
+        id: 'learning-collocation',
+        createdAt: '2026-08-02T00:00:00.000Z',
+        status: 'active' as const,
+        productiveUseIntent: false,
+      },
+    ];
+
+    const started = await store.start(learningItems);
+    if (started.status === 'unavailable') {
+      throw new Error('Expected a productive Review Session.');
+    }
+    expect(started.session.current).toMatchObject({
+      knowledgeDimension: 'productive-use',
+      taskType: 'productive',
+      attemptKind: 'objective',
+    });
+    await expect(
+      store.answer(started.session.id, {
+        retrievalFluency: 'recalled-fluently',
+      }),
+    ).rejects.toThrow('requires an overt response');
+    await store.answer(started.session.id, {
+      retrievalFluency: 'recalled-with-effort',
+      responseText: productiveItem.task.acceptableAlternativeAnswers[0]!,
+    });
+    await store.advance(started.session.id);
+
+    await expect(store.snapshot(learningItems)).resolves.toMatchObject({
+      activeSession: {
+        current: {
+          knowledgeDimension: 'collocation',
+          attemptKind: 'objective',
+        },
+      },
+      schedules: expect.arrayContaining([
+        expect.objectContaining({
+          knowledgeDimension: 'productive-use',
+          intervalStage: 0,
+          demonstratedCount: 0,
+          dueAt: '2026-08-16T12:00:00.000Z',
+        }),
+        expect.objectContaining({
+          knowledgeDimension: 'collocation',
+          intervalStage: 4,
+          demonstratedCount: 2,
+        }),
+      ]),
+      evidence: [
+        expect.objectContaining({
+          version: 2,
+          knowledgeDimension: 'productive-use',
+          kind: 'objective',
+          responseMethod: 'overt-production',
+          judgment: 'acceptable-alternative',
+          retrievalFluency: 'recalled-with-effort',
+        }),
+      ],
+    });
+  });
+
+  it('removes an unanswered productive prompt from an active session until intent resumes', async () => {
+    const storage = memoryStorage();
+    let sessionNumber = 0;
+    const store = createReviewSessionStore(storage, {
+      id: () => `session-${++sessionNumber}`,
+      now: () => '2026-08-15T12:00:00.000Z',
+    });
+    await store.approve(
+      approvedDimensionItem(
+        'review-productive',
+        'learning-productive',
+        'productive-use',
+      ),
+      {
+        dueAt: '2026-08-10T00:00:00.000Z',
+        demonstratedCount: 2,
+        intervalStage: 3,
+      },
+    );
+    const enabledItem = {
+      id: 'learning-productive',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      status: 'active' as const,
+      productiveUseIntent: true,
+    };
+    const started = await store.start([enabledItem]);
+    if (started.status === 'unavailable') {
+      throw new Error('Expected a productive Review Session.');
+    }
+    expect(started.session.current?.knowledgeDimension).toBe('productive-use');
+
+    await store.setProductiveUseIntent('learning-productive', false);
+    await expect(
+      store.snapshot([{ ...enabledItem, productiveUseIntent: false }]),
+    ).resolves.toMatchObject({
+      eligibleCount: 0,
+      activeSession: null,
+      schedules: [
+        expect.objectContaining({
+          knowledgeDimension: 'productive-use',
+          demonstratedCount: 2,
+          intervalStage: 3,
+        }),
+      ],
+      evidence: [],
+    });
+    expect(storage.values[REVIEW_SESSIONS_STORAGE_KEY]).toEqual({
+      version: 1,
+      records: [],
+    });
+
+    await store.setProductiveUseIntent('learning-productive', true);
+    const resumed = await store.start([enabledItem]);
+    expect(resumed).toMatchObject({
+      status: 'started',
+      session: {
+        current: { knowledgeDimension: 'productive-use' },
+      },
+    });
+  });
+
+  it('creates one durable productive schedule on opt-in and pauses eligibility without deleting state', async () => {
+    const storage = memoryStorage();
+    const store = createReviewSessionStore(storage, {
+      now: () => '2026-08-15T12:00:00.000Z',
+    });
+    await store.setProductiveUseIntent('learning-productive', true, {
+      learningStateV1: { intent: true },
+    });
+    await store.setProductiveUseIntent('learning-productive', false);
+    await store.setProductiveUseIntent('learning-productive', true);
+
+    expect(storage.values[REVIEW_SCHEDULES_STORAGE_KEY]).toEqual({
+      version: 1,
+      records: [
+        {
+          version: 1,
+          learningItemId: 'learning-productive',
+          knowledgeDimension: 'productive-use',
+          dueAt: '2026-08-15T12:00:00.000Z',
+          demonstratedCount: 0,
+          intervalStage: 0,
+        },
+      ],
+    });
+    expect(storage.values.learningStateV1).toEqual({ intent: true });
+  });
+
+  it('rejects a productive task whose Knowledge Dimension is receptive', async () => {
+    const storage = memoryStorage();
+    const store = createReviewSessionStore(storage);
+    const contextualItem = approvedItem(
+      'review-mismatched-task',
+      'learning-mismatched-task',
+    );
+
+    await expect(
+      store.approve(
+        {
+          ...contextualItem,
+          task: { ...contextualItem.task, type: 'productive' },
+        } as unknown as ApprovedReviewItem,
+        {
+          dueAt: '2026-08-15T00:00:00.000Z',
+          demonstratedCount: 0,
+          intervalStage: 0,
+        },
+      ),
+    ).rejects.toThrow('Productive Review task must match');
   });
 
   it('does not schedule a contextual Review Item carrying cross-dimension source authority', async () => {

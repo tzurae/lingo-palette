@@ -48,7 +48,7 @@ export const reviewEvidenceSchema = z
     evidenceBaseSchema
       .extend({
         kind: z.literal('objective'),
-        responseMethod: z.literal('overt-response'),
+        responseMethod: z.enum(['overt-response', 'overt-production']),
         retrievalFluency: retrievalFluencySchema,
         responseText: z.string().min(1),
         judgment: reviewJudgmentSchema,
@@ -56,6 +56,30 @@ export const reviewEvidenceSchema = z
       .strict(),
   ])
   .superRefine((evidence, context) => {
+    if (
+      evidence.knowledgeDimension === 'productive-use' &&
+      (evidence.kind !== 'objective' ||
+        evidence.responseMethod !== 'overt-production')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['responseMethod'],
+        message:
+          'Productive-use Review Evidence requires an overt production.',
+      });
+    }
+    if (
+      evidence.knowledgeDimension !== 'productive-use' &&
+      evidence.kind === 'objective' &&
+      evidence.responseMethod !== 'overt-response'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['responseMethod'],
+        message:
+          'Receptive objective Review Evidence uses an overt response.',
+      });
+    }
     if (evidence.version === 1) {
       if (
         evidence.knowledgeDimension !== 'contextual-meaning' ||

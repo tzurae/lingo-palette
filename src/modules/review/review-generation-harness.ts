@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type {
   EvidencePackManifest,
+  CollocationEvidence,
   LicenseAndAttribution,
   PinnedEnglishEvidencePack,
   ReviewAuthorityEvidence,
@@ -39,6 +40,7 @@ const learningItemSchema = z
     normalizedExpression: reviewText,
     status: z.literal('active'),
     sensePin: sensePinSchema.nullable(),
+    productiveUseIntent: z.boolean().optional(),
   });
 const encounterSchema = z
   .object({
@@ -81,10 +83,31 @@ const grammarPatternCandidateSchema = z
     claimScope: z.enum(['observed', 'universal']),
   })
   .strict();
+const collocationCandidateSchema = z
+  .object({
+    ...candidateBaseShape,
+    knowledgeDimension: z.literal('collocation'),
+    claimedCollocate: reviewText,
+  })
+  .strict();
+const productiveUseCandidateSchema = z
+  .object({
+    type: z.literal('productive'),
+    learningItemId: reviewText,
+    encounterId: reviewText,
+    knowledgeDimension: z.literal('productive-use'),
+    prompt: reviewText,
+    contextQuote,
+    acceptedAnswers: z.array(reviewText).min(1).max(12),
+    correctiveExplanation: reviewText,
+  })
+  .strict();
 const reviewCandidateSchema = z.discriminatedUnion('knowledgeDimension', [
   contextualMeaningCandidateSchema,
   usageFitCandidateSchema,
   grammarPatternCandidateSchema,
+  collocationCandidateSchema,
+  productiveUseCandidateSchema,
 ]);
 const criterionSchema = z.enum(['pass', 'fail', 'unknown']);
 const evaluationSchema = z
@@ -139,6 +162,12 @@ export type UsageFitReviewCandidate = z.infer<typeof usageFitCandidateSchema>;
 export type GrammarPatternReviewCandidate = z.infer<
   typeof grammarPatternCandidateSchema
 >;
+export type CollocationReviewCandidate = z.infer<
+  typeof collocationCandidateSchema
+>;
+export type ProductiveUseReviewCandidate = z.infer<
+  typeof productiveUseCandidateSchema
+>;
 export type ReviewCandidate = z.infer<typeof reviewCandidateSchema>;
 export type ReviewGenerationPin = z.infer<typeof generationSchema>;
 export type ReviewGenerationInput = z.infer<typeof reviewGenerationInputSchema>;
@@ -165,7 +194,7 @@ export type ApprovedReviewTask =
       correctiveExplanation: string;
     }
   | {
-      type: 'recall';
+      type: 'recall' | 'productive';
       prompt: string;
       contextQuote: string;
       targetAnswers: string[];
@@ -174,13 +203,10 @@ export type ApprovedReviewTask =
       correctiveExplanation: string;
     };
 
-
-export type ApprovedReviewItem = {
+type ApprovedReviewItemBase = {
   version: 1;
   id: string;
   learningItemId: string;
-  knowledgeDimension: MeasuredReviewKnowledgeDimension;
-  task: ApprovedReviewTask;
   provenance: {
     approvedAt: string;
     generation: { model: string; promptVersion: string };
@@ -195,6 +221,21 @@ export type ApprovedReviewItem = {
     };
   };
 };
+type ReceptiveKnowledgeDimension = Exclude<
+  MeasuredReviewKnowledgeDimension,
+  'productive-use'
+>;
+export type ApprovedReviewItem = ApprovedReviewItemBase &
+  (
+    | {
+        knowledgeDimension: 'productive-use';
+        task: ApprovedReviewTask & { type: 'productive' };
+      }
+    | {
+        knowledgeDimension: ReceptiveKnowledgeDimension;
+        task: ApprovedReviewTask & { type: 'recall' | 'contrastive' };
+      }
+  );
 
 export type ReviewGenerationResult =
   | { status: 'approved'; item: ApprovedReviewItem }
@@ -260,6 +301,12 @@ export function createReviewGenerationHarness(dependencies: {
       ) {
         return { status: 'rejected', reason: 'not-grounded' };
       }
+      if (
+        candidate.knowledgeDimension === 'productive-use' &&
+        !learningItem.productiveUseIntent
+      ) {
+        return { status: 'rejected', reason: 'not-grounded' };
+      }
       const sensePin = learningItem.sensePin;
       const encounter = encounters.find(
         (value) =>
@@ -280,7 +327,12 @@ export function createReviewGenerationHarness(dependencies: {
       }
 
       const evidence = Object.freeze(
-        evidenceForCandidate(evidencePack, candidate, sensePin),
+        evidenceForCandidate(
+          evidencePack,
+          candidate,
+          sensePin,
+          learningItem.normalizedExpression,
+        ),
       );
       if (evidence.length === 0) {
         return { status: 'rejected', reason: 'evidence-unavailable' };
@@ -367,42 +419,66 @@ export function createReviewGenerationHarness(dependencies: {
         ...acceptedKeys,
         ...partialAnswers.map(normalizedText),
       ]);
-      const hiddenValidAlternative = candidate.distractors.some((distractor) =>
+      const distractors =
+        candidate.knowledgeDimension === 'productive-use'
+          ? []
+          : candidate.distractors;
+      const hiddenValidAlternative = distractors.some((distractor) =>
         answerKeys.has(normalizedText(distractor)),
       );
-      const fallbackReasons = [
-        ...(hiddenValidAlternative ? ['hidden-valid-alternative'] : []),
-        ...(evaluation.data.distractorSafety === 'pass'
+      const fallbackReasons =
+        candidate.knowledgeDimension === 'productive-use'
           ? []
-          : ['unsafe-distractor']),
-      ];
-      const task: ApprovedReviewTask =
-        fallbackReasons.length === 0
+          : [
+              ...(hiddenValidAlternative ? ['hidden-valid-alternative'] : []),
+              ...(evaluation.data.distractorSafety === 'pass'
+                ? []
+                : ['unsafe-distractor']),
+            ];
+      const approvedDimension =
+        candidate.knowledgeDimension === 'productive-use'
           ? {
-              type: 'contrastive',
-              prompt: candidate.prompt,
-              contextQuote: candidate.contextQuote,
-              targetAnswers,
-              acceptableAlternativeAnswers,
-              partialAnswers,
-              distractors: uniqueText(candidate.distractors),
-              correctiveExplanation: candidate.correctiveExplanation,
+              knowledgeDimension: candidate.knowledgeDimension,
+              task: {
+                type: 'productive' as const,
+                prompt: candidate.prompt,
+                contextQuote: candidate.contextQuote,
+                targetAnswers,
+                acceptableAlternativeAnswers,
+                partialAnswers,
+                correctiveExplanation: candidate.correctiveExplanation,
+              },
             }
           : {
-              type: 'recall',
-              prompt:
-                candidate.knowledgeDimension === 'contextual-meaning'
-                  ? `What does “${learningItem.expression}” mean in this context?`
-                  : candidate.prompt,
-              contextQuote: candidate.contextQuote,
-              targetAnswers,
-              acceptableAlternativeAnswers,
-              partialAnswers,
-              correctiveExplanation: fallbackCorrectiveExplanation(
-                candidate,
-                learningItem.expression,
-                fallbackEvidence,
-              ),
+              knowledgeDimension: candidate.knowledgeDimension,
+              task:
+                fallbackReasons.length === 0
+                  ? {
+                      type: 'contrastive' as const,
+                      prompt: candidate.prompt,
+                      contextQuote: candidate.contextQuote,
+                      targetAnswers,
+                      acceptableAlternativeAnswers,
+                      partialAnswers,
+                      distractors: uniqueText(distractors),
+                      correctiveExplanation: candidate.correctiveExplanation,
+                    }
+                  : {
+                      type: 'recall' as const,
+                      prompt:
+                        candidate.knowledgeDimension === 'contextual-meaning'
+                          ? `What does “${learningItem.expression}” mean in this context?`
+                          : candidate.prompt,
+                      contextQuote: candidate.contextQuote,
+                      targetAnswers,
+                      acceptableAlternativeAnswers,
+                      partialAnswers,
+                      correctiveExplanation: fallbackCorrectiveExplanation(
+                        candidate,
+                        learningItem.expression,
+                        fallbackEvidence,
+                      ),
+                    },
             };
 
       return {
@@ -411,8 +487,7 @@ export function createReviewGenerationHarness(dependencies: {
           version: 1,
           id: id(),
           learningItemId: learningItem.id,
-          knowledgeDimension: candidate.knowledgeDimension,
-          task,
+          ...approvedDimension,
           provenance: {
             approvedAt: now(),
             generation,
@@ -482,6 +557,7 @@ function evidenceForCandidate(
   evidencePack: PinnedEnglishEvidencePack,
   candidate: ReviewCandidate,
   sensePin: SensePin,
+  normalizedExpression: string,
 ): ReviewAuthorityEvidence[] {
   if (evidencePack.manifest.version !== sensePin.evidencePackVersion) return [];
   if (candidate.knowledgeDimension === 'contextual-meaning') {
@@ -500,6 +576,40 @@ function evidenceForCandidate(
         normalizedText(entry.contextQuote) ===
           normalizedText(candidate.contextQuote) &&
         entry.fit === candidate.claimedFit,
+    );
+  }
+  if (candidate.knowledgeDimension === 'collocation') {
+    return evidencePack.collocations.filter(
+      (entry) =>
+        entry.authority === 'corpus-collocation' &&
+        normalizedText(entry.targetExpression) ===
+          normalizedText(normalizedExpression) &&
+        normalizedText(entry.collocate) ===
+          normalizedText(candidate.claimedCollocate) &&
+        entry.partOfSpeech === sensePin.partOfSpeech &&
+        entry.targetMorphologies.includes(sensePin.morphology) &&
+        Number.isInteger(entry.rawCount) &&
+        entry.rawCount >= 5 &&
+        Number.isInteger(entry.minimumRawCount) &&
+        entry.minimumRawCount >= 5 &&
+        entry.rawCount >= entry.minimumRawCount &&
+        entry.association.metric === 'log-likelihood' &&
+        Number.isFinite(entry.association.value) &&
+        entry.association.value > 0 &&
+        hasDocumentedCorpus(entry) &&
+        entry.window.type === 'same-sentence' &&
+        sameSentenceContainsCollocation(
+          candidate.contextQuote,
+          entry.targetExpression,
+          entry.collocate,
+        ),
+    );
+  }
+  if (candidate.knowledgeDimension === 'productive-use') {
+    return evidencePack.contextualMeanings.filter(
+      (entry) =>
+        entry.sourceSenseId === sensePin.sourceSenseId &&
+        entry.partOfSpeech === sensePin.partOfSpeech,
     );
   }
   return evidencePack.grammarPatterns.filter(
@@ -523,6 +633,12 @@ function isAuthoritativeForCandidate(
   if (candidate.knowledgeDimension === 'usage-fit') {
     return evidence.authority === 'sense-context';
   }
+  if (candidate.knowledgeDimension === 'collocation') {
+    return evidence.authority === 'corpus-collocation';
+  }
+  if (candidate.knowledgeDimension === 'productive-use') {
+    return evidence.authority === 'primary-lexical';
+  }
   if (candidate.claimScope === 'universal') return false;
   if (
     evidence.authority === 'source-recorded-frame' ||
@@ -537,7 +653,6 @@ function isAuthoritativeForCandidate(
     ).length >= 2
   );
 }
-
 function sufficientSupportedAuthority(
   candidate: ReviewCandidate,
   evidence: readonly ReviewAuthorityEvidence[],
@@ -547,6 +662,14 @@ function sufficientSupportedAuthority(
   }
   if (candidate.knowledgeDimension === 'usage-fit') {
     return evidence.filter((entry) => entry.authority === 'sense-context');
+  }
+  if (candidate.knowledgeDimension === 'collocation') {
+    return evidence.filter(
+      (entry) => entry.authority === 'corpus-collocation',
+    );
+  }
+  if (candidate.knowledgeDimension === 'productive-use') {
+    return evidence.filter((entry) => entry.authority === 'primary-lexical');
   }
   if (candidate.claimScope === 'universal') return [];
   const sourceRecorded = evidence.filter(
@@ -600,6 +723,63 @@ function contextQuoteSpansSelection(
 
 function normalizedText(value: string): string {
   return normalizeReviewAnswer(value);
+}
+
+function hasDocumentedCorpus(evidence: CollocationEvidence): boolean {
+  if (
+    normalizedText(evidence.corpus.name).length === 0 ||
+    evidence.corpus.language !== 'en' ||
+    !Number.isInteger(evidence.corpus.sentenceCount) ||
+    evidence.corpus.sentenceCount <= 0 ||
+    !Number.isInteger(evidence.corpus.tokenCount) ||
+    evidence.corpus.tokenCount < evidence.corpus.sentenceCount
+  ) {
+    return false;
+  }
+  try {
+    const source = new URL(evidence.corpus.sourceUrl);
+    return (
+      source.protocol === 'https:' &&
+      source.username === '' &&
+      source.password === ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+function sameSentenceContainsCollocation(
+  context: string,
+  targetExpression: string,
+  collocate: string,
+): boolean {
+  const targetTokens = normalizedTokens(targetExpression);
+  const collocateTokens = normalizedTokens(collocate);
+  if (targetTokens.length === 0 || collocateTokens.length === 0) return false;
+  return context.split(/[.!?]+/u).some((sentence) => {
+    const sentenceTokens = normalizedTokens(sentence);
+    return (
+      containsTokenSequence(sentenceTokens, targetTokens) &&
+      containsTokenSequence(sentenceTokens, collocateTokens)
+    );
+  });
+}
+
+function normalizedTokens(value: string): string[] {
+  return (
+    normalizedText(value).match(
+      /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu,
+    ) ?? []
+  );
+}
+
+function containsTokenSequence(
+  source: readonly string[],
+  target: readonly string[],
+): boolean {
+  return source.some((_, index) =>
+    target.every((token, offset) => source[index + offset] === token),
+  );
 }
 
 function sameEvidencePackManifest(
@@ -717,6 +897,10 @@ async function verifyEvidencePackIntegrity(
       {
         path: 'grammar-patterns.json',
         content: JSON.stringify(evidencePack.grammarPatterns),
+      },
+      {
+        path: 'collocations.json',
+        content: JSON.stringify(evidencePack.collocations),
       },
       {
         path: 'license-and-attribution.json',

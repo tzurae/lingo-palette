@@ -112,6 +112,51 @@ const grammarPatternCandidate = {
     'Here, “postponed” takes “the vote” as its object.',
 };
 
+const collocationLearningContext = {
+  learningItem: {
+    ...learningContext.learningItem,
+    expression: 'decision',
+    normalizedExpression: 'decision',
+    sensePin: {
+      ...learningContext.learningItem.sensePin,
+      sourceSenseId: 'oewn:test-decision-n',
+      morphology: 'base-form:decision',
+      partOfSpeech: 'noun',
+    },
+  },
+  encounters: [
+    {
+      id: 'encounter-1',
+      learningItemId: 'learning-1',
+      selection: {
+        text: 'decision',
+        context: { before: 'We must make a ', after: ', today.' },
+      },
+      sensePin: {
+        evidencePackVersion:
+          BUNDLED_ENGLISH_EVIDENCE_PACK.manifest.version,
+        sourceSenseId: 'oewn:test-decision-n',
+        morphology: 'base-form:decision',
+        partOfSpeech: 'noun',
+      },
+    },
+  ],
+};
+
+const collocationCandidate = {
+  type: 'contrastive' as const,
+  learningItemId: 'learning-1',
+  encounterId: 'encounter-1',
+  knowledgeDimension: 'collocation' as const,
+  prompt: 'Which verb commonly combines with “decision” here?',
+  contextQuote: 'We must make a decision, today.',
+  claimedCollocate: 'make',
+  acceptedAnswers: ['make a decision'],
+  distractors: ['do a decision'],
+  correctiveExplanation:
+    'The corpus records “make” and “decision” in the same sentence.',
+};
+
 const passingEvaluation = {
   grounding: 'pass' as const,
   answerability: 'pass' as const,
@@ -183,6 +228,10 @@ function withTestEvidencePackIntegrity(
       content: JSON.stringify(evidencePack.grammarPatterns),
     },
     {
+      path: 'collocations.json',
+      content: JSON.stringify(evidencePack.collocations),
+    },
+    {
       path: 'license-and-attribution.json',
       content: JSON.stringify(evidencePack.licenseAndAttribution),
     },
@@ -216,7 +265,7 @@ function withTestEvidencePackIntegrity(
 }
 
 describe('Review Generation harness', () => {
-  it('ships verifiable OEWN evidence with complete offline license texts', () => {
+  it('ships verifiable OEWN and Leipzig evidence with complete offline license texts', () => {
     const oewnLicense = BUNDLED_ENGLISH_EVIDENCE_PACK.licenses.find(
       (license) => license.id === 'CC-BY-4.0',
     );
@@ -248,6 +297,10 @@ describe('Review Generation harness', () => {
         content: JSON.stringify(
           BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns,
         ),
+      },
+      {
+        path: 'collocations.json',
+        content: JSON.stringify(BUNDLED_ENGLISH_EVIDENCE_PACK.collocations),
       },
       {
         path: 'license-and-attribution.json',
@@ -290,10 +343,16 @@ describe('Review Generation harness', () => {
           '9f4b322e09aecf500741a90de5158139750f030e70cacac9bb1318f40779c660',
       },
       {
-        path: 'license-and-attribution.json',
-        byteSize: 1_051,
+        path: 'collocations.json',
+        byteSize: 557,
         sha256:
-          '3e8104d8cf265a153e341e384a9edab62a7cc4cc852e10bb1c0a7c83cd287bbe',
+          'c2a8811769df42cf72c5b0ac78aef8d1d87faa80445974c7c76ad066d3ef5b36',
+      },
+      {
+        path: 'license-and-attribution.json',
+        byteSize: 1_761,
+        sha256:
+          'a9213b35b65f1f45a346e97e82bea3a7a4e388ef00677843b7043d846c4d3571',
       },
       {
         path: 'licenses/OEWN-2025-LICENSE.md',
@@ -318,7 +377,7 @@ describe('Review Generation harness', () => {
       ),
     );
     expect(BUNDLED_ENGLISH_EVIDENCE_PACK.manifest.compressedSizeBytes).toBe(
-      7_654,
+      7_972,
     );
     expect(
       BUNDLED_ENGLISH_EVIDENCE_PACK.manifest.compressedSizeBytes,
@@ -366,14 +425,14 @@ describe('Review Generation harness', () => {
           evidencePack: expect.objectContaining({
             id: 'lingo-palette-en-contextual-meaning-minimal',
             schemaVersion: 1,
-            version: '2025.1.0-minimal.2',
+            version: '2025.1.0-minimal.3',
             language: 'en',
             minimumExtensionVersion: '0.0.0',
-            compressedSizeBytes: 7_654,
-            installedSizeBytes: 23_627,
+            compressedSizeBytes: 7_972,
+            installedSizeBytes: 24_894,
             contentIdentitySha256:
-              '9597180e44214c2085173797a718709137f92f44cc0136fc99264697960b5d63',
-            sources: [
+              'd0daa1c1d86c284338ba9cb47f21f957d58975f9cc1f170b4bc393c30a8a8fc1',
+            sources: expect.arrayContaining([
               expect.objectContaining({
                 id: 'oewn',
                 version: '2025',
@@ -381,7 +440,7 @@ describe('Review Generation harness', () => {
                 sha256:
                   '7d749f6e2c39e6970e4997839dcf6e42fd281f3c2fae0171d2192bae8cfa4b51',
               }),
-            ],
+            ]),
           }),
           relevantEvidence: [
             expect.objectContaining({
@@ -500,6 +559,206 @@ describe('Review Generation harness', () => {
         }),
       }),
     });
+  });
+  it('approves a collocation only from corpus evidence compatible with the observed context', async () => {
+    const collocationEvidence = {
+      id: 'leipzig-eng-news-2023:decision-make',
+      sourceId: 'leipzig-eng-news',
+      sourceVersion: '2023-100K',
+      authority: 'corpus-collocation' as const,
+      targetExpression: 'decision',
+      collocate: 'make',
+      partOfSpeech: 'noun',
+      targetMorphologies: ['base-form:decision'],
+      window: { type: 'same-sentence' as const },
+      rawCount: 31,
+      association: { metric: 'log-likelihood' as const, value: 45.41 },
+      minimumRawCount: 5,
+      corpus: {
+        name: 'Leipzig English News Corpus 2023',
+        language: 'en' as const,
+        sentenceCount: 100_000,
+        tokenCount: 2_218_395,
+        sourceUrl:
+          'https://wortschatz.uni-leipzig.de/en/download/English',
+      },
+    };
+    const harness = createHarness({
+      evidencePack: withTestEvidencePackIntegrity({
+        ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+        collocations: [collocationEvidence],
+      }),
+      evaluator: {
+        evaluate: async ({ evidence }) => ({
+          ...passingEvaluation,
+          evidenceAssessments: evidence.map(({ id }) => ({
+            evidenceId: id,
+            relation: 'supports' as const,
+          })),
+        }),
+      },
+      id: () => 'review-collocation',
+    });
+
+    const result = await harness.review({
+      ...collocationLearningContext,
+      generation: {
+        model: generationPin.model,
+        promptVersion: 'collocation-prompt-v1',
+      },
+      candidate: collocationCandidate,
+    });
+
+    expect(result).toEqual({
+      status: 'approved',
+      item: expect.objectContaining({
+        id: 'review-collocation',
+        knowledgeDimension: 'collocation',
+        provenance: expect.objectContaining({
+          relevantEvidence: [collocationEvidence],
+          sourceAuthority: {
+            knowledgeDimension: 'collocation',
+            evidence: [
+              expect.objectContaining({
+                evidenceId: collocationEvidence.id,
+                authority: 'corpus-collocation',
+              }),
+            ],
+          },
+        }),
+      }),
+    });
+  });
+  it.each([
+    ['missing corpus evidence', []],
+    [
+      'a rare high-association accident',
+      [
+        {
+          ...BUNDLED_ENGLISH_EVIDENCE_PACK.collocations[0],
+          rawCount: 1,
+          association: { metric: 'log-likelihood' as const, value: 999 },
+        },
+      ],
+    ],
+    [
+      'undocumented corpus metadata',
+      [
+        {
+          ...BUNDLED_ENGLISH_EVIDENCE_PACK.collocations[0],
+          corpus: {
+            ...BUNDLED_ENGLISH_EVIDENCE_PACK.collocations[0]!.corpus,
+            sourceUrl: '',
+          },
+        },
+      ],
+    ],
+  ] as const)('rejects collocation approval for %s', async (_, collocations) => {
+    const harness = createHarness({
+      evidencePack: withTestEvidencePackIntegrity({
+        ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+        collocations,
+      }),
+      evaluator: {
+        evaluate: async ({ evidence }) => ({
+          ...passingEvaluation,
+          evidenceAssessments: evidence.map(({ id }) => ({
+            evidenceId: id,
+            relation: 'supports' as const,
+          })),
+        }),
+      },
+    });
+
+    await expect(
+      harness.review({
+        ...collocationLearningContext,
+        generation: generationPin,
+        candidate: collocationCandidate,
+      }),
+    ).resolves.toEqual({
+      status: 'rejected',
+      reason: 'evidence-unavailable',
+    });
+  });
+  it('approves overt productive use only for a Learner-opted-in item and retains valid alternatives', async () => {
+    const productiveCandidate = {
+      type: 'productive' as const,
+      learningItemId: 'learning-1',
+      encounterId: 'encounter-1',
+      knowledgeDimension: 'productive-use' as const,
+      prompt: 'Write a sentence that uses “postpone” naturally.',
+      contextQuote: "let's postpone the exam",
+      acceptedAnswers: ['We postponed the meeting until Friday.'],
+      correctiveExplanation:
+        'Use “postpone” for moving an event to a later time.',
+    };
+    const harness = createHarness({
+      evidencePack: withTestEvidencePackIntegrity(
+        BUNDLED_ENGLISH_EVIDENCE_PACK,
+      ),
+      evaluator: {
+        evaluate: async ({ evidence }) => ({
+          ...passingEvaluation,
+          validAlternativeAnswers: ['They postponed their trip.'],
+          evidenceAssessments: evidence.map(({ id }) => ({
+            evidenceId: id,
+            relation: 'supports' as const,
+          })),
+        }),
+      },
+      id: () => 'review-productive-use',
+    });
+
+    const optedInResult = await harness.review({
+      ...usageLearningContext,
+      learningItem: {
+        ...usageLearningContext.learningItem,
+        productiveUseIntent: true,
+      },
+      generation: {
+        model: generationPin.model,
+        promptVersion: 'productive-use-prompt-v1',
+      },
+      candidate: productiveCandidate,
+    });
+
+    expect(optedInResult).toEqual({
+      status: 'approved',
+      item: expect.objectContaining({
+        id: 'review-productive-use',
+        knowledgeDimension: 'productive-use',
+        task: {
+          type: 'productive',
+          prompt: productiveCandidate.prompt,
+          contextQuote: productiveCandidate.contextQuote,
+          targetAnswers: productiveCandidate.acceptedAnswers,
+          acceptableAlternativeAnswers: ['They postponed their trip.'],
+          partialAnswers: ['moved somehow'],
+          correctiveExplanation: productiveCandidate.correctiveExplanation,
+        },
+        provenance: expect.objectContaining({
+          sourceAuthority: expect.objectContaining({
+            knowledgeDimension: 'productive-use',
+            evidence: [
+              expect.objectContaining({ authority: 'primary-lexical' }),
+            ],
+          }),
+        }),
+      }),
+    });
+
+    await expect(
+      harness.review({
+        ...usageLearningContext,
+        learningItem: {
+          ...usageLearningContext.learningItem,
+          productiveUseIntent: false,
+        },
+        generation: generationPin,
+        candidate: productiveCandidate,
+      }),
+    ).resolves.toEqual({ status: 'rejected', reason: 'not-grounded' });
   });
   it.each(['lexical-relation', 'frequency'] as const)(
     'does not let %s evidence approve contextual usage fit',
@@ -935,7 +1194,7 @@ describe('Review Generation harness', () => {
           ...BUNDLED_ENGLISH_EVIDENCE_PACK,
           manifest: {
             ...BUNDLED_ENGLISH_EVIDENCE_PACK.manifest,
-            version: '2025.1.0-minimal.3',
+            version: '2025.1.0-minimal.4',
           },
         },
       }).isReusable(approved.item, generation),
