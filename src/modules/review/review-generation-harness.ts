@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import type {
-  ContextualMeaningEvidence,
   EvidencePackManifest,
   LicenseAndAttribution,
   PinnedEnglishEvidencePack,
+  ReviewAuthorityEvidence,
 } from '../evidence/bundled-english-evidence-pack';
 import { sensePinSchema, type SensePin } from '../learning/sense-pin';
 import {
@@ -14,6 +14,15 @@ import {
 } from '../reading-flow/selection';
 import { selectionSchema } from '../reading-flow/selection-parser';
 import { normalizeReviewAnswer } from './review-evidence';
+import {
+  reviewSourceAuthoritySchema,
+  type MeasuredReviewKnowledgeDimension,
+  type ReviewSourceAuthority,
+} from './review-source-authority';
+export type {
+  MeasuredReviewKnowledgeDimension,
+  ReviewSourceAuthority,
+} from './review-source-authority';
 
 const boundedText = (limit: number) =>
   z
@@ -41,19 +50,42 @@ const encounterSchema = z
 const generationSchema = z
   .object({ model: reviewText, promptVersion: reviewText })
   .strict();
-const contrastiveCandidateSchema = z
+const candidateBaseShape = {
+  type: z.literal('contrastive'),
+  learningItemId: reviewText,
+  encounterId: reviewText,
+  prompt: reviewText,
+  contextQuote,
+  acceptedAnswers: z.array(reviewText).min(1).max(12),
+  distractors: z.array(reviewText).min(1).max(8),
+  correctiveExplanation: reviewText,
+};
+const contextualMeaningCandidateSchema = z
   .object({
-    type: z.literal('contrastive'),
-    learningItemId: reviewText,
-    encounterId: reviewText,
+    ...candidateBaseShape,
     knowledgeDimension: z.literal('contextual-meaning'),
-    prompt: reviewText,
-    contextQuote,
-    acceptedAnswers: z.array(reviewText).min(1).max(12),
-    distractors: z.array(reviewText).min(1).max(8),
-    correctiveExplanation: reviewText,
   })
   .strict();
+const usageFitCandidateSchema = z
+  .object({
+    ...candidateBaseShape,
+    knowledgeDimension: z.literal('usage-fit'),
+    claimedFit: z.enum(['fits', 'does-not-fit']),
+  })
+  .strict();
+const grammarPatternCandidateSchema = z
+  .object({
+    ...candidateBaseShape,
+    knowledgeDimension: z.literal('grammar-pattern'),
+    claimedPattern: reviewText,
+    claimScope: z.enum(['observed', 'universal']),
+  })
+  .strict();
+const reviewCandidateSchema = z.discriminatedUnion('knowledgeDimension', [
+  contextualMeaningCandidateSchema,
+  usageFitCandidateSchema,
+  grammarPatternCandidateSchema,
+]);
 const criterionSchema = z.enum(['pass', 'fail', 'unknown']);
 const evaluationSchema = z
   .object({
@@ -96,13 +128,18 @@ const reviewGenerationInputSchema = z
     learningItem: learningItemSchema,
     encounters: z.array(encounterSchema).min(1),
     generation: generationSchema,
-    candidate: contrastiveCandidateSchema,
+    candidate: reviewCandidateSchema,
   })
   .strict();
 
 export type ContextualMeaningReviewCandidate = z.infer<
-  typeof contrastiveCandidateSchema
+  typeof contextualMeaningCandidateSchema
 >;
+export type UsageFitReviewCandidate = z.infer<typeof usageFitCandidateSchema>;
+export type GrammarPatternReviewCandidate = z.infer<
+  typeof grammarPatternCandidateSchema
+>;
+export type ReviewCandidate = z.infer<typeof reviewCandidateSchema>;
 export type ReviewGenerationPin = z.infer<typeof generationSchema>;
 export type ReviewGenerationInput = z.infer<typeof reviewGenerationInputSchema>;
 
@@ -111,8 +148,8 @@ export type ControlledReviewEvaluator = {
   evaluate(input: {
     learningItem: ReviewGenerationInput['learningItem'];
     encounter: ReviewGenerationInput['encounters'][number];
-    candidate: ContextualMeaningReviewCandidate;
-    evidence: readonly ContextualMeaningEvidence[];
+    candidate: ReviewCandidate;
+    evidence: readonly ReviewAuthorityEvidence[];
   }): Promise<unknown>;
 };
 
@@ -137,18 +174,20 @@ export type ApprovedReviewTask =
       correctiveExplanation: string;
     };
 
+
 export type ApprovedReviewItem = {
   version: 1;
   id: string;
   learningItemId: string;
-  knowledgeDimension: 'contextual-meaning';
+  knowledgeDimension: MeasuredReviewKnowledgeDimension;
   task: ApprovedReviewTask;
   provenance: {
     approvedAt: string;
     generation: { model: string; promptVersion: string };
     validatorVersion: string;
     evidencePack: EvidencePackManifest;
-    relevantEvidence: ContextualMeaningEvidence[];
+    relevantEvidence: ReviewAuthorityEvidence[];
+    sourceAuthority?: ReviewSourceAuthority;
     licenseAndAttribution: readonly LicenseAndAttribution[];
     validation: {
       outcome: 'approved' | 'safe-fallback';
@@ -199,6 +238,7 @@ export function createReviewGenerationHarness(dependencies: {
         item.provenance.generation.promptVersion ===
           parsedGeneration.data.promptVersion &&
         item.provenance.validatorVersion === validatorVersion &&
+        authorityPinsRelevantEvidence(item) &&
         sameEvidencePackManifest(
           item.provenance.evidencePack,
           evidencePack.manifest,
@@ -214,7 +254,10 @@ export function createReviewGenerationHarness(dependencies: {
 
       const { learningItem, encounters, generation, candidate } =
         immutableSnapshot(parsed.data);
-      if (candidate.learningItemId !== learningItem.id || learningItem.sensePin === null) {
+      if (
+        candidate.learningItemId !== learningItem.id ||
+        learningItem.sensePin === null
+      ) {
         return { status: 'rejected', reason: 'not-grounded' };
       }
       const sensePin = learningItem.sensePin;
@@ -237,13 +280,7 @@ export function createReviewGenerationHarness(dependencies: {
       }
 
       const evidence = Object.freeze(
-        evidencePack.contextualMeanings.filter(
-          (entry) =>
-            evidencePack.manifest.version ===
-              sensePin.evidencePackVersion &&
-            entry.sourceSenseId === sensePin.sourceSenseId &&
-            entry.partOfSpeech === sensePin.partOfSpeech,
-        ),
+        evidenceForCandidate(evidencePack, candidate, sensePin),
       );
       if (evidence.length === 0) {
         return { status: 'rejected', reason: 'evidence-unavailable' };
@@ -274,10 +311,10 @@ export function createReviewGenerationHarness(dependencies: {
       if (coreCriteria.some((criterion) => criterion !== 'pass')) {
         return { status: 'rejected', reason: 'candidate-unsafe' };
       }
-      const primaryEvidence = evidence.filter(
-        (entry) => entry.authority === 'primary-lexical',
+      const authoritativeEvidence = evidence.filter((entry) =>
+        isAuthoritativeForCandidate(candidate, entry, evidence),
       );
-      if (primaryEvidence.length === 0) {
+      if (authoritativeEvidence.length === 0) {
         return { status: 'rejected', reason: 'evidence-unavailable' };
       }
       const relationByEvidenceId = new Map(
@@ -286,18 +323,22 @@ export function createReviewGenerationHarness(dependencies: {
           assessment.relation,
         ]),
       );
-      const primaryRelations = primaryEvidence.map(
+      const authorityRelations = authoritativeEvidence.map(
         (entry) => relationByEvidenceId.get(entry.id) ?? 'unknown',
       );
-      if (primaryRelations.includes('contradicts')) {
+      if (authorityRelations.includes('contradicts')) {
         return { status: 'rejected', reason: 'source-conflict' };
       }
-      if (!primaryRelations.includes('supports')) {
-        return { status: 'rejected', reason: 'evidence-unavailable' };
-      }
-      const relevantEvidence = primaryEvidence.filter(
+      const supportedEvidence = authoritativeEvidence.filter(
         (entry) => relationByEvidenceId.get(entry.id) === 'supports',
       );
+      const relevantEvidence = sufficientSupportedAuthority(
+        candidate,
+        supportedEvidence,
+      );
+      if (relevantEvidence.length === 0) {
+        return { status: 'rejected', reason: 'evidence-unavailable' };
+      }
       const fallbackEvidence = relevantEvidence[0];
       if (fallbackEvidence === undefined) {
         return { status: 'rejected', reason: 'evidence-unavailable' };
@@ -349,12 +390,19 @@ export function createReviewGenerationHarness(dependencies: {
             }
           : {
               type: 'recall',
-              prompt: `What does “${learningItem.expression}” mean in this context?`,
+              prompt:
+                candidate.knowledgeDimension === 'contextual-meaning'
+                  ? `What does “${learningItem.expression}” mean in this context?`
+                  : candidate.prompt,
               contextQuote: candidate.contextQuote,
               targetAnswers,
               acceptableAlternativeAnswers,
               partialAnswers,
-              correctiveExplanation: `Here, “${learningItem.expression}” means “${fallbackEvidence.definition}”.`,
+              correctiveExplanation: fallbackCorrectiveExplanation(
+                candidate,
+                learningItem.expression,
+                fallbackEvidence,
+              ),
             };
 
       return {
@@ -363,7 +411,7 @@ export function createReviewGenerationHarness(dependencies: {
           version: 1,
           id: id(),
           learningItemId: learningItem.id,
-          knowledgeDimension: 'contextual-meaning',
+          knowledgeDimension: candidate.knowledgeDimension,
           task,
           provenance: {
             approvedAt: now(),
@@ -371,6 +419,15 @@ export function createReviewGenerationHarness(dependencies: {
             validatorVersion,
             evidencePack: structuredClone(evidencePack.manifest),
             relevantEvidence: structuredClone(relevantEvidence),
+            sourceAuthority: reviewSourceAuthoritySchema.parse({
+              knowledgeDimension: candidate.knowledgeDimension,
+              evidence: relevantEvidence.map((entry) => ({
+                evidenceId: entry.id,
+                sourceId: entry.sourceId,
+                sourceVersion: entry.sourceVersion,
+                authority: entry.authority,
+              })),
+            }),
             licenseAndAttribution: structuredClone(licenseAndAttribution),
             validation: {
               outcome:
@@ -384,6 +441,30 @@ export function createReviewGenerationHarness(dependencies: {
   };
 }
 
+function authorityPinsRelevantEvidence(item: ApprovedReviewItem): boolean {
+  if (item.provenance.sourceAuthority === undefined) {
+    return item.knowledgeDimension === 'contextual-meaning';
+  }
+  const parsed = reviewSourceAuthoritySchema.safeParse(
+    item.provenance.sourceAuthority,
+  );
+  if (
+    !parsed.success ||
+    parsed.data.knowledgeDimension !== item.knowledgeDimension
+  ) {
+    return false;
+  }
+  return parsed.data.evidence.every((authority) =>
+    item.provenance.relevantEvidence.some(
+      (evidence) =>
+        evidence.id === authority.evidenceId &&
+        evidence.sourceId === authority.sourceId &&
+        evidence.sourceVersion === authority.sourceVersion &&
+        evidence.authority === authority.authority,
+    ),
+  );
+}
+
 function sameSensePin(
   left: SensePin | null,
   right: SensePin,
@@ -395,6 +476,100 @@ function sameSensePin(
     left.morphology === right.morphology &&
     left.partOfSpeech === right.partOfSpeech
   );
+}
+
+function evidenceForCandidate(
+  evidencePack: PinnedEnglishEvidencePack,
+  candidate: ReviewCandidate,
+  sensePin: SensePin,
+): ReviewAuthorityEvidence[] {
+  if (evidencePack.manifest.version !== sensePin.evidencePackVersion) return [];
+  if (candidate.knowledgeDimension === 'contextual-meaning') {
+    return evidencePack.contextualMeanings.filter(
+      (entry) =>
+        entry.sourceSenseId === sensePin.sourceSenseId &&
+        entry.partOfSpeech === sensePin.partOfSpeech,
+    );
+  }
+  if (candidate.knowledgeDimension === 'usage-fit') {
+    return evidencePack.usageFits.filter(
+      (entry) =>
+        entry.sourceSenseId === sensePin.sourceSenseId &&
+        entry.partOfSpeech === sensePin.partOfSpeech &&
+        entry.morphology === sensePin.morphology &&
+        normalizedText(entry.contextQuote) ===
+          normalizedText(candidate.contextQuote) &&
+        entry.fit === candidate.claimedFit,
+    );
+  }
+  return evidencePack.grammarPatterns.filter(
+    (entry) =>
+      entry.sourceSenseId === sensePin.sourceSenseId &&
+      entry.partOfSpeech === sensePin.partOfSpeech &&
+      entry.morphologies.includes(sensePin.morphology) &&
+      normalizedText(entry.pattern) ===
+        normalizedText(candidate.claimedPattern),
+  );
+}
+
+function isAuthoritativeForCandidate(
+  candidate: ReviewCandidate,
+  evidence: ReviewAuthorityEvidence,
+  matchingEvidence: readonly ReviewAuthorityEvidence[],
+): boolean {
+  if (candidate.knowledgeDimension === 'contextual-meaning') {
+    return evidence.authority === 'primary-lexical';
+  }
+  if (candidate.knowledgeDimension === 'usage-fit') {
+    return evidence.authority === 'sense-context';
+  }
+  if (candidate.claimScope === 'universal') return false;
+  if (
+    evidence.authority === 'source-recorded-frame' ||
+    evidence.authority === 'source-recorded-usage-note'
+  ) {
+    return true;
+  }
+  return (
+    evidence.authority === 'pos-aware-corpus-attestation' &&
+    matchingEvidence.filter(
+      (entry) => entry.authority === 'pos-aware-corpus-attestation',
+    ).length >= 2
+  );
+}
+
+function sufficientSupportedAuthority(
+  candidate: ReviewCandidate,
+  evidence: readonly ReviewAuthorityEvidence[],
+): ReviewAuthorityEvidence[] {
+  if (candidate.knowledgeDimension === 'contextual-meaning') {
+    return evidence.filter((entry) => entry.authority === 'primary-lexical');
+  }
+  if (candidate.knowledgeDimension === 'usage-fit') {
+    return evidence.filter((entry) => entry.authority === 'sense-context');
+  }
+  if (candidate.claimScope === 'universal') return [];
+  const sourceRecorded = evidence.filter(
+    (entry) =>
+      entry.authority === 'source-recorded-frame' ||
+      entry.authority === 'source-recorded-usage-note',
+  );
+  if (sourceRecorded.length > 0) return sourceRecorded;
+  const corpus = evidence.filter(
+    (entry) => entry.authority === 'pos-aware-corpus-attestation',
+  );
+  return corpus.length >= 2 ? corpus : [];
+}
+
+function fallbackCorrectiveExplanation(
+  candidate: ReviewCandidate,
+  expression: string,
+  evidence: ReviewAuthorityEvidence,
+): string {
+  return candidate.knowledgeDimension === 'contextual-meaning' &&
+    'definition' in evidence
+    ? `Here, “${expression}” means “${evidence.definition}”.`
+    : candidate.correctiveExplanation;
 }
 
 function uniqueText(values: readonly string[]): string[] {
@@ -536,6 +711,14 @@ async function verifyEvidencePackIntegrity(
         content: JSON.stringify(evidencePack.contextualMeanings),
       },
       {
+        path: 'usage-fits.json',
+        content: JSON.stringify(evidencePack.usageFits),
+      },
+      {
+        path: 'grammar-patterns.json',
+        content: JSON.stringify(evidencePack.grammarPatterns),
+      },
+      {
         path: 'license-and-attribution.json',
         content: JSON.stringify(evidencePack.licenseAndAttribution),
       },
@@ -589,7 +772,7 @@ async function verifyEvidencePackIntegrity(
 
 function resolveLicenseAndAttribution(
   evidencePack: PinnedEnglishEvidencePack,
-  evidence: readonly ContextualMeaningEvidence[],
+  evidence: readonly ReviewAuthorityEvidence[],
 ): LicenseAndAttribution[] | null {
   const notices = new Map<string, LicenseAndAttribution>();
   for (const entry of evidence) {

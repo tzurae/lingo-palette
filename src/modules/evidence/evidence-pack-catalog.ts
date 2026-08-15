@@ -2,7 +2,7 @@ export const EVIDENCE_PACK_ORIGIN =
   'https://tzurae.github.io/lingo-palette-evidence/';
 export const MAX_EVIDENCE_PACK_COMPRESSED_BYTES = 100_000_000;
 export const MAX_EVIDENCE_PACK_INSTALLED_BYTES = 300 * 1024 * 1024;
-export const BUNDLED_EVIDENCE_PACK_VERSION = '2025.1.0-minimal.1';
+export const BUNDLED_EVIDENCE_PACK_VERSION = '2025.1.0-minimal.2';
 export const PACKAGED_EVIDENCE_PUBLIC_KEY_BASE64 =
   'kHxypnWGN74KcpPe76teIZstjRqn4/ehc1oXWZXlJ1M=';
 

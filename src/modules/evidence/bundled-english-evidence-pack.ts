@@ -1,5 +1,6 @@
 import oewnLicenseText from './licenses/OEWN-2025-LICENSE.md.txt?raw';
 import wordNetLicenseText from './licenses/WNDB_License.txt?raw';
+import { BUNDLED_EVIDENCE_PACK_VERSION } from './evidence-pack-catalog';
 
 export type EvidencePackManifest = {
   id: string;
@@ -58,6 +59,39 @@ export type ContextualMeaningEvidence = {
   authority: 'primary-lexical' | 'supplemental';
 };
 
+export type UsageFitEvidence = {
+  id: string;
+  sourceId: string;
+  sourceVersion: string;
+  sourceSenseId: string;
+  partOfSpeech: string;
+  morphology: string;
+  contextQuote: string;
+  fit: 'fits' | 'does-not-fit';
+  attestation: string;
+  authority: 'sense-context' | 'lexical-relation' | 'frequency';
+};
+
+export type GrammarPatternEvidence = {
+  id: string;
+  sourceId: string;
+  sourceVersion: string;
+  sourceSenseId: string;
+  partOfSpeech: string;
+  morphologies: readonly string[];
+  pattern: string;
+  attestation: string;
+  authority:
+    | 'source-recorded-frame'
+    | 'source-recorded-usage-note'
+    | 'pos-aware-corpus-attestation';
+};
+
+export type ReviewAuthorityEvidence =
+  | ContextualMeaningEvidence
+  | UsageFitEvidence
+  | GrammarPatternEvidence;
+
 export type EvidenceLicense = {
   id: string;
   text: string;
@@ -66,6 +100,8 @@ export type EvidenceLicense = {
 export type PinnedEnglishEvidencePack = {
   manifest: EvidencePackManifest;
   contextualMeanings: readonly ContextualMeaningEvidence[];
+  usageFits: readonly UsageFitEvidence[];
+  grammarPatterns: readonly GrammarPatternEvidence[];
   licenses: readonly EvidenceLicense[];
   licenseAndAttribution: readonly LicenseAndAttribution[];
 };
@@ -74,20 +110,32 @@ export const BUNDLED_ENGLISH_EVIDENCE_PACK = {
   manifest: {
     id: 'lingo-palette-en-contextual-meaning-minimal',
     schemaVersion: 1,
-    version: '2025.1.0-minimal.1',
+    version: BUNDLED_EVIDENCE_PACK_VERSION,
     language: 'en',
     minimumExtensionVersion: '0.0.0',
     compression: 'gzip',
-    compressedSizeBytes: 7_519,
-    installedSizeBytes: 23_003,
+    compressedSizeBytes: 7_654,
+    installedSizeBytes: 23_627,
     contentIdentitySha256:
-      'bdb3f16559eb0576ede76aab11caa853f7902beed2603662845d03281c3aec7f',
+      '9597180e44214c2085173797a718709137f92f44cc0136fc99264697960b5d63',
     contentHashes: [
       {
         path: 'contextual-meanings.json',
         byteSize: 349,
         sha256:
           'e31fd3bb1cbee8a4ab11bc83c6dcbec80356fe576f6ee4c78dcd0ef7110f6ad6',
+      },
+      {
+        path: 'usage-fits.json',
+        byteSize: 302,
+        sha256:
+          'a095d9707ebc87389a75a3bf3247da76ad3e4fca174df8ae3dac5f9babcd901e',
+      },
+      {
+        path: 'grammar-patterns.json',
+        byteSize: 322,
+        sha256:
+          '9f4b322e09aecf500741a90de5158139750f030e70cacac9bb1318f40779c660',
       },
       {
         path: 'license-and-attribution.json',
@@ -157,6 +205,36 @@ export const BUNDLED_ENGLISH_EVIDENCE_PACK = {
       ],
       examples: ["let's postpone the exam"],
       authority: 'primary-lexical',
+    },
+  ],
+  usageFits: [
+    {
+      id: 'oewn-2025:postpone%2:42:00::-example-1',
+      sourceId: 'oewn',
+      sourceVersion: '2025',
+      sourceSenseId: 'oewn:02648898-v',
+      partOfSpeech: 'verb',
+      morphology: 'base-form:postpone',
+      contextQuote: "let's postpone the exam",
+      fit: 'fits',
+      attestation: "let's postpone the exam",
+      authority: 'sense-context',
+    },
+  ],
+  grammarPatterns: [
+    {
+      id: 'oewn-2025:postpone%2:42:00::-vtai',
+      sourceId: 'oewn',
+      sourceVersion: '2025',
+      sourceSenseId: 'oewn:02648898-v',
+      partOfSpeech: 'verb',
+      morphologies: [
+        'base-form:postpone',
+        'past-tense-of:postpone',
+      ],
+      pattern: 'Somebody postpones something',
+      attestation: 'Somebody ----s something',
+      authority: 'source-recorded-frame',
     },
   ],
   licenses: [

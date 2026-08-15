@@ -10,7 +10,11 @@ import {
   type ReviewJudgment,
   type RetrievalFluency,
 } from './review-evidence';
-import type { ApprovedReviewItem } from './review-generation-harness';
+import type {
+  ApprovedReviewItem,
+  MeasuredReviewKnowledgeDimension,
+} from './review-generation-harness';
+import { reviewSourceAuthoritySchema } from './review-source-authority';
 import {
   APPROVED_REVIEW_ITEMS_STORAGE_KEY,
   REVIEW_EVIDENCE_STORAGE_KEY,
@@ -20,7 +24,11 @@ import {
 } from './review-storage-keys';
 
 
-const knowledgeDimensionSchema = z.literal('contextual-meaning');
+const knowledgeDimensionSchema = z.enum([
+  'contextual-meaning',
+  'usage-fit',
+  'grammar-pattern',
+]);
 const scheduleKnowledgeDimensionSchema = z.enum([
   'contextual-meaning',
   'usage-fit',
@@ -86,6 +94,14 @@ const compatibleTaskSchema = z
       partialAnswers: [],
     };
   });
+const reviewProvenanceEvidenceSchema = z
+  .object({
+    id: z.string().min(1),
+    sourceId: z.string().min(1),
+    sourceVersion: z.string().min(1),
+    authority: z.string().min(1),
+  })
+  .passthrough();
 const approvedReviewItemSchema = z
   .object({
     version: z.literal(1),
@@ -99,10 +115,59 @@ const approvedReviewItemSchema = z
         evidencePack: z
           .object({ version: z.string().min(1) })
           .passthrough(),
+        sourceAuthority: reviewSourceAuthoritySchema.optional(),
+        relevantEvidence: z.array(reviewProvenanceEvidenceSchema).optional(),
       })
       .passthrough(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((item, context) => {
+    const sourceAuthority = item.provenance.sourceAuthority;
+    if (
+      sourceAuthority !== undefined &&
+      sourceAuthority.knowledgeDimension !== item.knowledgeDimension
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['provenance', 'sourceAuthority'],
+        message:
+          'Review Item source authority must match its Knowledge Dimension.',
+      });
+    }
+    if (
+      item.knowledgeDimension !== 'contextual-meaning' &&
+      sourceAuthority === undefined
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['provenance', 'sourceAuthority'],
+        message:
+          'Usage-fit and grammar-pattern Review Items require matching source authority.',
+      });
+    }
+    if (item.provenance.sourceAuthority === undefined) return;
+    const relevantEvidence = item.provenance.relevantEvidence ?? [];
+    const authorityEvidence = item.provenance.sourceAuthority.evidence;
+    for (const [index, authority] of authorityEvidence.entries()) {
+      if (
+        relevantEvidence.some(
+          (entry) =>
+            entry.id === authority.evidenceId &&
+            entry.sourceId === authority.sourceId &&
+            entry.sourceVersion === authority.sourceVersion &&
+            entry.authority === authority.authority,
+        )
+      ) {
+        continue;
+      }
+      context.addIssue({
+        code: 'custom',
+        path: ['provenance', 'sourceAuthority', 'evidence', index],
+        message:
+          'Source authority must pin matching relevant Evidence Pack provenance.',
+      });
+    }
+  });
 const approvedStateSchema = z
   .object({
     version: z.literal(1),
@@ -228,7 +293,7 @@ export type ReviewResponseEvaluator = {
 type ReviewCurrentBase = Readonly<{
   reviewItemId: string;
   learningItemId: string;
-  knowledgeDimension: 'contextual-meaning';
+  knowledgeDimension: MeasuredReviewKnowledgeDimension;
   taskType: ApprovedReviewItem['task']['type'];
   prompt: string;
   contextQuote: string;
@@ -501,7 +566,8 @@ export function createReviewSessionStore(
         }
         const existingEvidence = evidenceState.records.find(
           (record) =>
-            record.sessionId === session.id && record.reviewItemId === reviewItemId,
+            record.sessionId === session.id &&
+            record.reviewItemId === reviewItemId,
         );
         if (existingEvidence !== undefined) {
           throw new Error('The current Review Item already has Review Evidence.');
@@ -539,13 +605,16 @@ export function createReviewSessionStore(
               )
             : undefined;
         const evidence = reviewEvidenceSchema.parse({
-          version: 1,
+          version: item.provenance.sourceAuthority === undefined ? 1 : 2,
           id: evidenceId,
           learningItemId: item.learningItemId,
           reviewItemId: item.id,
           sessionId: session.id,
           knowledgeDimension: item.knowledgeDimension,
           recordedAt,
+          ...(item.provenance.sourceAuthority === undefined
+            ? {}
+            : { sourceAuthority: item.provenance.sourceAuthority }),
           kind: attemptKind,
           responseMethod:
             attemptKind === 'objective' ? 'overt-response' : 'covert-recall',
