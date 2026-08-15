@@ -31,8 +31,11 @@
         </div>
       </section>
       <section id="saved-panel" role="tabpanel" aria-labelledby="saved-tab" tabindex="0" hidden>
-        <h2>Saved</h2>
-        <p>目前沒有已儲存的 Learning Items。</p>
+        <div id="saved-content">
+          <h2>Saved</h2>
+          <p>正在讀取 Learning Items…</p>
+        </div>
+        <p id="saved-error" class="error" hidden></p>
       </section>
     </main>
     <p id="live-status" class="visually-hidden" role="status" aria-live="polite"></p>

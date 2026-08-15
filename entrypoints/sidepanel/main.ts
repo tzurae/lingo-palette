@@ -1,4 +1,16 @@
 import {
+  LEARNING_STATE_STORAGE_KEY,
+  type Encounter,
+  type LearningItem,
+  type LearningMutation,
+  type LearningState,
+  type MergeSuggestion,
+} from '../../src/modules/learning/learning-item-store';
+import type {
+  LearningRequest,
+  LearningResponse,
+} from '../../src/modules/learning/messages';
+import {
   LOOKUP_RECORDS_STORAGE_KEY,
   type LookupRecord,
 } from '../../src/modules/learning/lookup-record';
@@ -21,7 +33,12 @@ const currentPanel = requiredElement<HTMLElement>('#current-panel');
 const currentContent = requiredElement<HTMLElement>('#current-content');
 const recentPanel = requiredElement<HTMLElement>('#recent-panel');
 const recentContent = requiredElement<HTMLElement>('#recent-content');
+const savedPanel = requiredElement<HTMLElement>('#saved-panel');
+const savedContent = requiredElement<HTMLElement>('#saved-content');
+const savedError = requiredElement<HTMLElement>('#saved-error');
 const liveStatus = requiredElement<HTMLElement>('#live-status');
+let recentRecords: LookupRecord[] = [];
+let learningState: LearningState | null = null;
 
 for (const tab of tabs) {
   tab.addEventListener('click', () => activateTab(tab));
@@ -47,9 +64,13 @@ browser.storage.onChanged.addListener((changes, areaName) => {
   if (changes[LOOKUP_RECORDS_STORAGE_KEY] !== undefined) {
     void loadRecent();
   }
+  if (changes[LEARNING_STATE_STORAGE_KEY] !== undefined) {
+    void loadSaved();
+  }
 });
 void loadState();
 void loadRecent();
+void loadSaved();
 
 async function loadState(): Promise<void> {
   try {
@@ -79,9 +100,27 @@ async function loadRecent(): Promise<void> {
       renderRecentError(response.message);
       return;
     }
-    renderRecent(response.records);
+    recentRecords = response.records;
+    renderRecent(recentRecords);
   } catch {
     renderRecentError('無法讀取 Recent Lookup Records。');
+  }
+}
+
+async function loadSaved(): Promise<void> {
+  try {
+    const response = (await browser.runtime.sendMessage({
+      type: 'get-saved',
+    })) as LearningResponse;
+    if (response.status !== 'loaded') {
+      renderSavedError(response.message);
+      return;
+    }
+    learningState = response.state;
+    renderSaved(response.state);
+    renderRecent(recentRecords);
+  } catch {
+    renderSavedError('無法讀取 Saved Learning Items。');
   }
 }
 
@@ -146,6 +185,21 @@ function renderLookupRecord(record: LookupRecord): HTMLElement {
       }),
     );
   }
+  const saved =
+    learningState?.encounters.some(
+      (encounter) => encounter.lookupRecordId === record.id,
+    ) === true;
+  const saveButton = element('button', saved ? '已儲存' : '儲存到 Saved');
+  saveButton.disabled = saved;
+  if (!saved) {
+    saveButton.addEventListener('click', () => {
+      void performLearningAction({
+        type: 'save-lookup',
+        lookupRecordId: record.id,
+      });
+    });
+  }
+  article.append(saveButton);
   return article;
 }
 
@@ -159,6 +213,361 @@ function renderRecentError(message: string): void {
   if (restoreFocus) recentPanel.focus({ preventScroll: true });
 }
 
+
+function renderSaved(state: LearningState): void {
+  clearSavedError();
+  const restoreFocus = savedContent.contains(document.activeElement);
+  savedContent.replaceChildren(element('h2', 'Saved'));
+  const activeItems = state.learningItems.filter(
+    (item): item is Extract<LearningItem, { status: 'active' }> =>
+      item.status === 'active',
+  );
+  if (activeItems.length === 0) {
+    savedContent.append(
+      element('p', '目前沒有已儲存的 Learning Items。'),
+    );
+  } else {
+    const list = element('ol');
+    list.className = 'learning-items';
+    for (const item of activeItems) {
+      const entry = element('li');
+      entry.append(renderLearningItem(item, state, activeItems));
+      list.append(entry);
+    }
+    savedContent.append(list);
+  }
+
+  const pendingSuggestions = state.mergeSuggestions.filter(
+    (
+      suggestion,
+    ): suggestion is Extract<MergeSuggestion, { status: 'pending' }> =>
+      suggestion.status === 'pending',
+  );
+  if (pendingSuggestions.length > 0) {
+    const section = element('section');
+    section.className = 'merge-suggestions';
+    section.append(element('h2', 'Merge Suggestions'));
+    for (const suggestion of pendingSuggestions) {
+      section.append(renderMergeSuggestion(suggestion, state));
+    }
+    savedContent.append(section);
+  }
+
+  if (state.history.length > 0) {
+    savedContent.append(renderLearningHistory(state));
+  }
+  if (!savedPanel.hidden) {
+    announce(`Saved 已載入 ${activeItems.length} 個 Learning Items。`);
+  }
+  if (restoreFocus) savedPanel.focus({ preventScroll: true });
+}
+
+function renderLearningItem(
+  item: Extract<LearningItem, { status: 'active' }>,
+  state: LearningState,
+  activeItems: Array<Extract<LearningItem, { status: 'active' }>>,
+): HTMLElement {
+  const article = element('article');
+  article.className = 'learning-item';
+  article.append(
+    element('h3', item.expression),
+    labelledText('Normalized expression', item.normalizedExpression),
+    labelledText(
+      'Sense pin',
+      item.sensePin === null
+        ? 'Unpinned'
+        : `${item.sensePin.sourceSenseId}; ${item.sensePin.partOfSpeech}; ${item.sensePin.morphology}; pack ${item.sensePin.evidencePackVersion}`,
+    ),
+  );
+
+  const intentLabel = element('label');
+  intentLabel.className = 'productive-intent';
+  const intent = element('input');
+  intent.type = 'checkbox';
+  intent.checked = item.productiveUseIntent;
+  intent.addEventListener('change', () => {
+    void performLearningAction({
+      type: 'set-productive-use-intent',
+      learningItemId: item.id,
+      enabled: intent.checked,
+    });
+  });
+  intentLabel.append(intent, document.createTextNode(' Productive-use Intent'));
+  article.append(intentLabel);
+
+  const encounters = state.encounters.filter(
+    (encounter) => encounter.learningItemId === item.id,
+  );
+  const list = element('ol');
+  list.className = 'encounters';
+  for (const encounter of encounters) {
+    const entry = element('li');
+    entry.append(renderEncounter(encounter, item.id, activeItems));
+    list.append(entry);
+  }
+  article.append(list);
+  return article;
+}
+
+function renderEncounter(
+  encounter: Encounter,
+  currentLearningItemId: string,
+  activeItems: Array<Extract<LearningItem, { status: 'active' }>>,
+): HTMLElement {
+  const section = element('section');
+  section.className = 'encounter';
+  section.append(
+    labelledText('Context', encounterContext(encounter), 'encounter-context'),
+    labelledText('Lookup Record', encounter.lookupRecordId),
+    labelledText('Completed', new Date(encounter.completedAt).toLocaleString('zh-TW')),
+  );
+  if (encounter.sourceUrl !== undefined) {
+    section.append(labelledText('Source', encounter.sourceUrl));
+  }
+
+  const targets = activeItems.filter(
+    (item) => item.id !== currentLearningItemId,
+  );
+  if (targets.length > 0) {
+    const controls = element('div');
+    controls.className = 'reclassification';
+    const select = element('select');
+    select.setAttribute(
+      'aria-label',
+      `Reclassify ${encounter.selection.text} to Learning Item`,
+    );
+    for (const target of targets) {
+      const option = element('option', target.expression);
+      option.value = target.id;
+      select.append(option);
+    }
+    const move = element('button', 'Reclassify Encounter');
+    move.addEventListener('click', () => {
+      void performLearningAction({
+        type: 'reclassify-encounter',
+        encounterId: encounter.id,
+        targetLearningItemId: select.value,
+      });
+    });
+    controls.append(select, move);
+    section.append(controls);
+  }
+  return section;
+}
+
+function renderMergeSuggestion(
+  suggestion: Extract<MergeSuggestion, { status: 'pending' }>,
+  state: LearningState,
+): HTMLElement {
+  const article = element('article');
+  article.className = 'merge-suggestion';
+  article.append(
+    element('h3', 'Merge Suggestion'),
+    element('p', suggestion.reason),
+  );
+  const source = state.learningItems.find(
+    (item) => item.id === suggestion.sourceLearningItemId,
+  );
+  const target = state.learningItems.find(
+    (item) => item.id === suggestion.targetLearningItemId,
+  );
+  if (source !== undefined) {
+    article.append(renderSuggestionContext('Separate save', source, state));
+  }
+  if (target !== undefined) {
+    article.append(renderSuggestionContext('Existing item', target, state));
+  }
+  const actions = element('div');
+  actions.className = 'actions';
+  const merge = element('button', '合併');
+  merge.addEventListener('click', () => {
+    void performLearningAction({
+      type: 'resolve-merge-suggestion',
+      suggestionId: suggestion.id,
+      decision: 'merge',
+    });
+  });
+  const keepSeparate = element('button', '保持分開');
+  keepSeparate.addEventListener('click', () => {
+    void performLearningAction({
+      type: 'resolve-merge-suggestion',
+      suggestionId: suggestion.id,
+      decision: 'keep-separate',
+    });
+  });
+  actions.append(merge, keepSeparate);
+  article.append(actions);
+  return article;
+}
+
+function renderSuggestionContext(
+  label: string,
+  item: LearningItem,
+  state: LearningState,
+): HTMLElement {
+  const section = element('section');
+  section.className = 'suggestion-context';
+  section.append(element('h4', label));
+  const encounters = state.encounters.filter(
+    (encounter) => encounter.learningItemId === item.id,
+  );
+  for (const encounter of encounters) {
+    section.append(
+      labelledText('Context', encounterContext(encounter)),
+      labelledText('Lookup Record', encounter.lookupRecordId),
+    );
+    if (encounter.sourceUrl !== undefined) {
+      section.append(labelledText('Source', encounter.sourceUrl));
+    }
+  }
+  return section;
+}
+
+function renderLearningHistory(state: LearningState): HTMLElement {
+  const history = state.history;
+  const section = element('section');
+  section.className = 'learning-history';
+  section.append(element('h2', 'Learning history'));
+  let latestActiveMutationId: string | null = null;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const candidate = history[index];
+    if (candidate?.undoneAt === null) {
+      latestActiveMutationId = candidate.id;
+      break;
+    }
+  }
+  const list = element('ol');
+  for (const mutation of history.toReversed()) {
+    const entry = element('li');
+    entry.className = 'learning-mutation';
+    entry.append(
+      element('strong', learningMutationLabel(mutation)),
+      labelledText('Mutation ID', mutation.id),
+      element(
+        'p',
+        mutation.undoneAt === null
+          ? mutation.type === 'keep-separate'
+            ? '已選擇保持分開'
+            : '目前生效'
+          : `已復原：${new Date(mutation.undoneAt).toLocaleString('zh-TW')}`,
+      ),
+    );
+    if (
+      mutation.type === 'auto-merge' ||
+      mutation.type === 'learner-merge'
+    ) {
+      entry.append(renderMergeMutationDetails(mutation, state));
+    }
+    if (mutation.id === latestActiveMutationId) {
+      const undo = element('button', '復原');
+      undo.addEventListener('click', () => {
+        void performLearningAction({
+          type: 'undo-learning-mutation',
+          mutationId: mutation.id,
+        });
+      });
+      entry.append(undo);
+    }
+    list.append(entry);
+  }
+  section.append(list);
+  return section;
+}
+
+function renderMergeMutationDetails(
+  mutation: Extract<
+    LearningMutation,
+    { type: 'auto-merge' | 'learner-merge' }
+  >,
+  state: LearningState,
+): HTMLElement {
+  const details = element('section');
+  details.className = 'mutation-details';
+  details.append(element('h3', 'Merge participants'));
+  const source = state.learningItems.find(
+    (item) => item.id === mutation.sourceLearningItemId,
+  );
+  const target = state.learningItems.find(
+    (item) => item.id === mutation.targetLearningItemId,
+  );
+  details.append(
+    labelledText(
+      'Source Learning Item',
+      source === undefined
+        ? mutation.sourceLearningItemId
+        : `${source.expression} (${source.id})`,
+    ),
+    labelledText(
+      'Target Learning Item',
+      target === undefined
+        ? mutation.targetLearningItemId
+        : `${target.expression} (${target.id})`,
+    ),
+  );
+  for (const encounterId of [
+    ...mutation.targetEncounterIds,
+    ...mutation.encounterIds,
+  ]) {
+    const encounter = state.encounters.find(
+      (candidate) => candidate.id === encounterId,
+    );
+    const encounterDetails = element('section');
+    encounterDetails.className = 'mutation-encounter';
+    encounterDetails.append(element('h4', `Encounter ${encounterId}`));
+    if (encounter !== undefined) {
+      encounterDetails.append(
+        labelledText('Context', encounterContext(encounter)),
+        labelledText('Lookup Record', encounter.lookupRecordId),
+      );
+      if (encounter.sourceUrl !== undefined) {
+        encounterDetails.append(labelledText('Source', encounter.sourceUrl));
+      }
+    }
+    details.append(encounterDetails);
+  }
+  return details;
+}
+
+function learningMutationLabel(mutation: LearningMutation): string {
+  if (mutation.type === 'auto-merge') return '自動合併';
+  if (mutation.type === 'learner-merge') return 'Learner 合併';
+  if (mutation.type === 'keep-separate') return '保持分開';
+  return 'Encounter reclassification';
+}
+
+function encounterContext(encounter: Encounter): string {
+  return `${encounter.selection.context.before}${encounter.selection.text}${encounter.selection.context.after}`;
+}
+
+async function performLearningAction(request: LearningRequest): Promise<void> {
+  clearSavedError();
+  announce('正在更新 Saved。');
+  try {
+    const response = (await browser.runtime.sendMessage(
+      request,
+    )) as LearningResponse;
+    if (response.status !== 'loaded') {
+      renderSavedError(response.message);
+      return;
+    }
+    learningState = response.state;
+    renderSaved(response.state);
+    renderRecent(recentRecords);
+  } catch {
+    renderSavedError('無法更新 Saved Learning Items。');
+  }
+}
+
+function renderSavedError(message: string): void {
+  savedError.textContent = message;
+  savedError.hidden = false;
+  if (!savedPanel.hidden) announce(message);
+}
+
+function clearSavedError(): void {
+  savedError.textContent = '';
+  savedError.hidden = true;
+}
 function renderCurrent(state: DeepDiveState): void {
   const restoreFocus = currentContent.contains(document.activeElement);
   currentContent.replaceChildren();

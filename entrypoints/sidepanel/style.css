@@ -190,6 +190,88 @@ li p {
   color: #fff;
 }
 
+.learning-items,
+.encounters,
+.learning-history ol {
+  display: grid;
+  gap: 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.learning-item,
+.merge-suggestion,
+.learning-mutation {
+  display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.productive-intent {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 700;
+}
+
+.productive-intent input {
+  width: 20px;
+  height: 20px;
+}
+
+.encounter,
+.suggestion-context {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid #cbd5e1;
+}
+
+.encounter-context {
+  padding: 8px;
+  border-left: 4px solid #2563eb;
+  background: #eff6ff;
+}
+
+.reclassification {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reclassification select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.merge-suggestions,
+.learning-history {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.merge-suggestion {
+  border-left: 5px solid #b45309;
+}
+
+.learning-mutation {
+  background: #f8fafc;
+}
+
+.lookup-record > button,
+.learning-item button,
+.learning-history button,
+.reclassification button {
+  justify-self: start;
+  padding: 8px 12px;
+}
+
 .error {
   color: #991b1b;
   font-weight: 700;
@@ -212,7 +294,10 @@ li p {
   .actions button,
   .deep-dive-result > section,
   .request,
-  .lookup-record {
+  .lookup-record,
+  .learning-item,
+  .merge-suggestion,
+  .learning-mutation {
     border: 2px solid ButtonText;
   }
 
