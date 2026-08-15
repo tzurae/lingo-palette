@@ -14,7 +14,7 @@ import {
 import type { Selection } from '../reading-flow/selection';
 
 const responsesEndpoint = 'https://api.openai.com/v1/responses';
-const requestTimeoutMs = 30_000;
+export const OPENAI_REQUEST_TIMEOUT_MS = 30_000;
 const quickHintMaximumOutputTokens = 256;
 const deepDiveMaximumOutputTokens = 2_048;
 const providerFramingTokenAllowance = 1_024;
@@ -493,7 +493,7 @@ async function requestStructuredOutput(input: {
   signal?: AbortSignal | undefined;
   compatibilityProbe: boolean;
 }): Promise<{ outputText: string; usage: OpenAiUsage }> {
-  const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
+  const timeoutSignal = AbortSignal.timeout(OPENAI_REQUEST_TIMEOUT_MS);
   const requestSignal =
     input.signal === undefined
       ? timeoutSignal
@@ -759,7 +759,7 @@ function usageFromProvider(
   };
 }
 
-function runtimeFailureKind(
+export function runtimeFailureKind(
   status: number,
   code: string | undefined,
 ): OpenAiRuntimeFailureKind {
@@ -786,7 +786,7 @@ function runtimeFailureKind(
   return 'provider-unavailable';
 }
 
-function runtimeFailureMessage(
+export function runtimeFailureMessage(
   kind: OpenAiRuntimeFailureKind,
   providerMessage: string,
 ): string {
@@ -818,8 +818,9 @@ function runtimeFailureMessage(
       return `OpenAI provider 無法使用。${detail}`;
   }
 }
-
-function retryAfterMilliseconds(value: string | null): number | undefined {
+export function retryAfterMilliseconds(
+  value: string | null,
+): number | undefined {
   if (value === null) return undefined;
   const seconds = Number(value);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;

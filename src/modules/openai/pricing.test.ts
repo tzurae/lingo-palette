@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   OPENAI_PRICING_CHECKED_DATE,
   estimateOpenAiCost,
+  estimateOpenAiSpeechCost,
   pricingForModel,
   pricingIsStale,
 } from './pricing';
@@ -24,6 +25,15 @@ describe('packaged OpenAI pricing', () => {
     ).toBeCloseTo(0.00045 + 0.00003 + 0.0027, 12);
   });
 
+
+  it('prices fixed-snapshot speech input and audio output tokens', () => {
+    expect(
+      estimateOpenAiSpeechCost({
+        inputTokens: 200,
+        outputTokens: 1_250,
+      }),
+    ).toBeCloseTo(0.01512, 12);
+  });
   it('does not fabricate an estimate for an unknown custom model', () => {
     expect(pricingForModel('gpt-custom-exact')).toBeNull();
     expect(
