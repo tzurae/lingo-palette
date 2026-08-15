@@ -9,6 +9,16 @@ export type OpenAiTextPricing = {
   cachedInputUsdPerMillion: number;
   outputUsdPerMillion: number;
 };
+export type OpenAiSpeechPricing = {
+  inputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+};
+
+export const OPENAI_SPEECH_PRICING: OpenAiSpeechPricing = {
+  inputUsdPerMillion: 0.6,
+  outputUsdPerMillion: 12,
+};
+
 
 const pricingByModel: Record<string, OpenAiTextPricing> = {
   'gpt-5.4-mini-2026-03-17': {
@@ -42,6 +52,18 @@ export function estimateOpenAiCost(
     usage.cachedInputTokens *
       (pricing.cachedInputUsdPerMillion / 1_000_000) +
     usage.outputTokens * (pricing.outputUsdPerMillion / 1_000_000)
+  );
+}
+
+export function estimateOpenAiSpeechCost(usage: {
+  inputTokens: number;
+  outputTokens: number;
+}): number {
+  return (
+    usage.inputTokens *
+      (OPENAI_SPEECH_PRICING.inputUsdPerMillion / 1_000_000) +
+    usage.outputTokens *
+      (OPENAI_SPEECH_PRICING.outputUsdPerMillion / 1_000_000)
   );
 }
 

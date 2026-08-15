@@ -24,6 +24,7 @@ import {
   OPENAI_PRICING_CHECKED_DATE,
   OPENAI_USAGE_DASHBOARD_URL,
   estimateOpenAiCost,
+  estimateOpenAiSpeechCost,
   pricingForModel,
   pricingIsStale,
 } from '../src/modules/openai/pricing';
@@ -39,6 +40,11 @@ import {
   type CapabilityProbeReport,
   type OpenAiUsage,
 } from '../src/modules/openai/openai-responses';
+import { conservativeTokenCount } from '../src/modules/pronunciation/playback';
+import { createSpeechCache } from '../src/modules/pronunciation/speech-cache';
+import { createOpenAiSpeechClient } from '../src/modules/pronunciation/openai-speech';
+import { createPronunciationExecutor } from '../src/modules/pronunciation/pronunciation-executor';
+import { parsePronunciationSelection } from '../src/modules/pronunciation/selection-parser';
 import { parseDeepDive } from '../src/modules/reading-flow/deep-dive';
 import { createDeepDiveStateStore } from '../src/modules/reading-flow/deep-dive-state';
 import { parseQuickHint } from '../src/modules/reading-flow/quick-hint';
@@ -54,6 +60,7 @@ import type {
   QuickHintResponse,
   ReadingFlowRequest,
   RecentResponse,
+  PronunciationAudioResponse,
 } from '../src/modules/reading-flow/messages';
 
 const readingFlowScript = '/reading-flow.js';
@@ -67,6 +74,38 @@ const learningItemStore = createLearningItemStore(
   browser.storage.local,
   createStoredEligibleSenseLookup(browser.storage.local),
 );
+const speechCache = createSpeechCache(browser.storage.local);
+const openAiSpeechClient = createOpenAiSpeechClient(
+  import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,
+);
+const pronunciationExecutor = createPronunciationExecutor({
+  countTokens: conservativeTokenCount,
+  cache: speechCache,
+  budget: budgetLedger,
+  isOnline: async () =>
+    import.meta.env.WXT_TEST_BROWSER === 'true'
+      ? (await browser.storage.local.get('openAiTestOnline'))
+          .openAiTestOnline !== false
+      : navigator.onLine,
+  provider: {
+    async generate(input, signal) {
+      try {
+        return await openAiSpeechClient.generate(
+          {
+            apiKey: input.apiKey,
+            text: input.selection.text,
+            variety: input.variety,
+          },
+          signal,
+        );
+      } catch (error) {
+        throw asAssistanceFailure(error, speechProviderUsage);
+      }
+    },
+  },
+  wait: waitForRetry,
+  random: Math.random,
+});
 const quickHintCacheStorageKey = 'quickHintCacheV1';
 const maximumQuickHintCacheEntries = 100;
 const deepDiveCacheStorageKey = 'deepDiveCacheV1';
@@ -83,6 +122,7 @@ let activeDeepDive: {
   controller: AbortController;
   completionClaimed: boolean;
 } | null = null;
+const activePronunciationAudio = new Map<string, AbortController>();
 const quickHintCacheSchema = z.record(z.string(), z.unknown());
 let deepDiveStartVersion = 0;
 const deepDiveCacheSchema = z.record(z.string(), z.unknown());
@@ -96,6 +136,9 @@ const controlledResponseQueueSchema = z.array(
 );
 const controlledRequestSchema = z.object({
   text: z.object({ format: z.object({ name: z.string() }) }),
+});
+const controlledSpeechRequestSchema = z.object({
+  stream_format: z.literal('sse'),
 });
 const openAiResponsesClient = createOpenAiResponsesClient(
   import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,
@@ -157,7 +200,9 @@ const quickHintExecutor = createQuickHintExecutor({
           usage: providerUsage(input.configuration.model.id, generated.usage),
         };
       } catch (error) {
-        throw asAssistanceFailure(error, input.configuration.model.id);
+        throw asAssistanceFailure(error, (usage) =>
+          providerUsage(input.configuration.model.id, usage),
+        );
       }
     },
   },
@@ -221,7 +266,9 @@ const deepDiveExecutor = createDeepDiveExecutor({
           usage: providerUsage(input.configuration.model.id, generated.usage),
         };
       } catch (error) {
-        throw asAssistanceFailure(error, input.configuration.model.id);
+        throw asAssistanceFailure(error, (usage) =>
+          providerUsage(input.configuration.model.id, usage),
+        );
       }
     },
   },
@@ -292,6 +339,7 @@ function registerBackgroundListeners(): void {
           | QuickHintResponse
           | OpenAiSettingsResponse
           | RecentResponse
+          | PronunciationAudioResponse
           | LearningResponse
         >
       | undefined => {
@@ -318,6 +366,17 @@ function registerBackgroundListeners(): void {
       }
       if (message.type === 'cancel-deep-dive') {
         return cancelDeepDive(sender);
+      }
+      if (message.type === 'pronunciation-audio') {
+        return generatePronunciationAudio(
+          message.requestId,
+          message.selection,
+          message.variety,
+          sender,
+        );
+      }
+      if (message.type === 'cancel-pronunciation-audio') {
+        return cancelPronunciationAudio(message.requestId);
       }
       if (message.type === 'get-recent') {
         return getRecent(sender);
@@ -528,6 +587,135 @@ async function cancelQuickHint(
   }
   activity?.controller.abort();
   return { status: 'cancelled', message: '已取消 Quick Hint；Selection 仍保留。' };
+}
+
+async function generatePronunciationAudio(
+  requestId: string,
+  selection: Selection,
+  variety: 'en-US' | 'en-GB',
+  sender: Browser.runtime.MessageSender,
+): Promise<PronunciationAudioResponse> {
+  activePronunciationAudio.get(requestId)?.abort();
+  const controller = new AbortController();
+  activePronunciationAudio.set(requestId, controller);
+  try {
+    const origin = originForSender(sender);
+    const permitted =
+      origin !== null &&
+      (await browser.permissions.contains({ origins: [`${origin}/*`] }));
+    if (controller.signal.aborted) {
+      return {
+        status: 'cancelled',
+        message: '已取消 Pronunciation Playback；Selection 仍保留。',
+      };
+    }
+    if (!permitted) {
+      return {
+        status: 'failed',
+        message: '請先啟用目前網站，再使用 Pronunciation Playback。',
+      };
+    }
+
+    let providerSelection: Selection;
+    try {
+      providerSelection = parsePronunciationSelection(selection);
+    } catch {
+      return {
+        status: 'failed',
+        message: 'Selection 超過 Pronunciation Playback 可接受的範圍。',
+      };
+    }
+
+    const [settings, runtime] = await Promise.all([
+      openAiConfigurationStore.loadSettings(),
+      openAiConfigurationStore.loadRuntimeConfiguration(),
+    ]);
+    if (controller.signal.aborted) {
+      return {
+        status: 'cancelled',
+        message: '已取消 Pronunciation Playback；Selection 仍保留。',
+      };
+    }
+    if (import.meta.env.WXT_TEST_BROWSER === 'true') {
+      await browser.storage.local.set({
+        pronunciationTestRequest: {
+          requestId,
+          selection: providerSelection,
+          variety,
+        },
+      });
+    }
+    const outcome = await pronunciationExecutor.execute(
+      {
+        apiKey: runtime?.apiKey ?? '',
+        configuration: settings.configuration,
+        selection: providerSelection,
+        variety,
+      },
+      controller.signal,
+      (progress) => {
+        const tabId = sender.tab?.id;
+        if (tabId === undefined) return;
+        void browser.tabs
+          .sendMessage(
+            tabId,
+            {
+              type: 'pronunciation-progress',
+              requestId,
+              message: `OpenAI ${progress.kind}；第 ${progress.completedAttempts} 次語音嘗試未完成，${Math.ceil(progress.delayMs / 100) / 10} 秒後進行第 ${progress.nextAttempt} 次。`,
+            },
+            { frameId: sender.frameId ?? 0 },
+          )
+          .catch(() => undefined);
+      },
+    );
+    if (controller.signal.aborted) {
+      return {
+        status: 'cancelled',
+        message: '已取消 Pronunciation Playback；Selection 仍保留。',
+      };
+    }
+    return {
+      status: 'completed',
+      audio: { ...outcome.result, source: outcome.source },
+      usage: outcome.usage,
+      attempts: outcome.attempts,
+    };
+  } catch (error) {
+    if (error instanceof AssistanceFailure) {
+      if (error.kind === 'cancelled') {
+        return { status: 'cancelled', message: error.message };
+      }
+      return {
+        status: 'failed',
+        message: error.message,
+        kind: error.kind,
+        retryable: error.retryable,
+      };
+    }
+    return {
+      status: 'failed',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Pronunciation Playback 無法產生遠端語音。',
+    };
+  } finally {
+    if (activePronunciationAudio.get(requestId) === controller) {
+      activePronunciationAudio.delete(requestId);
+    }
+  }
+}
+
+async function cancelPronunciationAudio(
+  requestId: string,
+): Promise<PronunciationAudioResponse> {
+  activePronunciationAudio.get(requestId)?.abort();
+  activePronunciationAudio.delete(requestId);
+  return {
+    status: 'cancelled',
+    message: '已取消 Pronunciation Playback；Selection 仍保留。',
+  };
 }
 
 async function startDeepDive(
@@ -1064,9 +1252,16 @@ function providerUsage(model: string, usage: OpenAiUsage): ProviderUsage {
   };
 }
 
+function speechProviderUsage(usage: OpenAiUsage): ProviderUsage {
+  return {
+    ...usage,
+    estimatedCostUsd: estimateOpenAiSpeechCost(usage),
+  };
+}
+
 function asAssistanceFailure(
   error: unknown,
-  model: string,
+  usageFromProvider: (usage: OpenAiUsage) => ProviderUsage,
 ): AssistanceFailure {
   if (error instanceof AssistanceFailure) return error;
   if (error instanceof OpenAiProviderError) {
@@ -1079,7 +1274,7 @@ function asAssistanceFailure(
         : { retryAfterMs: error.retryAfterMs }),
       ...(error.usage === undefined
         ? {}
-        : { usage: providerUsage(model, error.usage) }),
+        : { usage: usageFromProvider(error.usage) }),
     });
   }
   if (error instanceof OpenAiCompatibilityError) {
@@ -1089,7 +1284,7 @@ function asAssistanceFailure(
       retryable: false,
       ...(error.usage === undefined
         ? {}
-        : { usage: providerUsage(model, error.usage) }),
+        : { usage: usageFromProvider(error.usage) }),
     });
   }
   return new AssistanceFailure({
@@ -1132,7 +1327,10 @@ async function controlledOpenAiFetch(
   init?: RequestInit,
 ): Promise<Response> {
   const rawRequest: unknown = JSON.parse(String(init?.body));
-  const request = controlledRequestSchema.parse(rawRequest);
+  const speechRequest = controlledSpeechRequestSchema.safeParse(rawRequest);
+  const request = speechRequest.success
+    ? null
+    : controlledRequestSchema.parse(rawRequest);
   const stored = await browser.storage.local.get([
     'openAiTestResponses',
     'quickHintTestFixture',
@@ -1158,11 +1356,35 @@ async function controlledOpenAiFetch(
         init?.signal ?? new AbortController().signal,
       );
     }
+    if (speechRequest.success && typeof next.body === 'string') {
+      return new Response(next.body, {
+        status: next.status,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          ...next.headers,
+        },
+      });
+    }
     return Response.json(next.body, {
       status: next.status,
       ...(next.headers === undefined ? {} : { headers: next.headers }),
     });
   }
+
+  if (speechRequest.success) {
+    return new Response(
+      [
+        'event: speech.audio.delta',
+        'data: {"type":"speech.audio.delta","audio":"AQID"}',
+        '',
+        'event: speech.audio.done',
+        'data: {"type":"speech.audio.done","usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}',
+        '',
+      ].join('\n'),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    );
+  }
+  if (request === null) throw new Error('Expected a Responses API request.');
 
   const output =
     request.text.format.name === 'quick_hint'

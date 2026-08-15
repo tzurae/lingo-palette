@@ -6,6 +6,10 @@ import type { LookupRecord } from '../learning/lookup-record';
 import type { DeepDiveState } from './deep-dive-state';
 import type { QuickHintResult } from './quick-hint';
 import type { Selection } from './selection';
+import type {
+  PronunciationVariety,
+  RemoteAudio,
+} from '../pronunciation/playback';
 
 export type EnableSiteRequest = {
   type: 'enable-site';
@@ -37,6 +41,16 @@ export type RetryDeepDiveRequest = {
 export type CancelDeepDiveRequest = {
   type: 'cancel-deep-dive';
 };
+export type PronunciationAudioRequest = {
+  type: 'pronunciation-audio';
+  requestId: string;
+  selection: Selection;
+  variety: PronunciationVariety;
+};
+export type CancelPronunciationAudioRequest = {
+  type: 'cancel-pronunciation-audio';
+  requestId: string;
+};
 export type GetRecentRequest = {
   type: 'get-recent';
 };
@@ -50,6 +64,8 @@ export type ReadingFlowRequest =
   | GetDeepDiveStateRequest
   | RetryDeepDiveRequest
   | CancelDeepDiveRequest
+  | PronunciationAudioRequest
+  | CancelPronunciationAudioRequest
   | GetRecentRequest;
 
 export type EnableSiteResponse = {
@@ -89,6 +105,25 @@ export type DeepDiveResponse =
   | {
       status: 'failed' | 'cancelled';
       message: string;
+    };
+
+export type PronunciationAudioResponse =
+  | {
+      status: 'completed';
+      audio: RemoteAudio;
+      usage: ProviderUsage | null;
+      attempts: number;
+    }
+  | {
+      status: 'cancelled';
+      message: string;
+    }
+  | {
+      status: 'failed';
+      message: string;
+      kind?: AssistanceFailureKind;
+      retryable?: boolean;
+      attempts?: number;
     };
 
 export type RecentResponse =

@@ -260,6 +260,189 @@ describe('unpacked extension Reading Flow', () => {
     });
   });
 
+
+  it('plays disclosed US pronunciation, reuses it offline, and keeps Selection on stop', async () => {
+    const speechEvents = [
+      'event: speech.audio.delta',
+      'data: {"type":"speech.audio.delta","audio":"AQID"}',
+      '',
+      'event: speech.audio.done',
+      'data: {"type":"speech.audio.done","usage":{"input_tokens":14,"output_tokens":999,"total_tokens":1013}}',
+      '',
+    ].join('\n');
+    const budgetBefore = await worker.evaluate(async (key) => {
+      const stored = await chrome.storage.local.get(key);
+      return stored[key];
+    }, OPENAI_BUDGET_LEDGER_STORAGE_KEY);
+    await worker.evaluate(async (body) => {
+      await chrome.storage.local.set({
+        openAiTestOnline: true,
+        openAiTestRequests: [],
+        openAiTestResponses: [
+          {
+            status: 500,
+            body: {
+              error: {
+                code: 'server_error',
+                message: 'Temporary speech failure.',
+              },
+              usage: {
+                input_tokens: 4,
+                output_tokens: 8,
+                total_tokens: 12,
+              },
+            },
+          },
+          { status: 200, delayMs: 1_000, body },
+        ],
+      });
+    }, speechEvents);
+
+    await selectTextByPointer(page, '#copy', 'postpone');
+    const pronunciation = page.getByRole('group', {
+      name: 'Pronunciation Playback',
+    });
+    const pronunciationStatus = pronunciation.locator(
+      '.pronunciation-status',
+    );
+    await pronunciation.getByRole('button', { name: 'US English' }).click();
+    await expect
+      .poll(() => pronunciationStatus.textContent())
+      .toContain('第 1 次語音嘗試未完成');
+    await pronunciation.getByRole('button', { name: '暫停' }).click();
+    await expect
+      .poll(() => pronunciationStatus.textContent())
+      .toContain('已暫停');
+    await pronunciation.getByRole('button', { name: '繼續' }).click();
+    await expect
+      .poll(() => pronunciationStatus.textContent(), { timeout: 5_000 })
+      .toContain(
+        'AI 產生語音 Playback 已完成；voice cedar，variety en-US，2 次 provider 嘗試，共 1,013 tokens',
+      );
+
+    const generated = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get([
+        'pronunciationTestRequest',
+        'openAiTestRequests',
+      ]);
+      return {
+        pronunciationTestRequest: stored.pronunciationTestRequest,
+        openAiTestRequests: Array.isArray(stored.openAiTestRequests)
+          ? stored.openAiTestRequests
+          : [],
+      };
+    });
+    expect(generated.pronunciationTestRequest).toMatchObject({
+      selection: { text: 'postpone' },
+      variety: 'en-US',
+    });
+    expect(generated.openAiTestRequests).toHaveLength(2);
+    expect(generated.openAiTestRequests.at(-1)).toEqual(
+      expect.objectContaining({
+        model: 'gpt-4o-mini-tts-2025-12-15',
+        voice: 'cedar',
+        input: 'postpone',
+        response_format: 'mp3',
+        stream_format: 'sse',
+        instructions: expect.stringContaining('General American English'),
+      }),
+    );
+    const speechTokenDelta = await worker.evaluate(
+      async ([key, before]) => {
+        const current = (await chrome.storage.local.get(key))[key] as {
+          used: { totalTokens: number };
+        };
+        const prior = before as
+          | { used?: { totalTokens?: number } }
+          | undefined;
+        return current.used.totalTokens - (prior?.used?.totalTokens ?? 0);
+      },
+      [OPENAI_BUDGET_LEDGER_STORAGE_KEY, budgetBefore] as const,
+    );
+    expect(speechTokenDelta).toBe(1_025);
+
+    await worker.evaluate(async () => {
+      await chrome.storage.local.set({
+        openAiTestOnline: false,
+        openAiTestRequests: [],
+      });
+    });
+    await selectTextByPointer(page, '#copy', 'postpone');
+    await pronunciation.getByRole('button', { name: 'US English' }).click();
+    await expect
+      .poll(() => pronunciationStatus.textContent())
+      .toContain('本機快取');
+    const offlineRequests = await worker.evaluate(async () => {
+      const stored = await chrome.storage.local.get('openAiTestRequests');
+      return stored.openAiTestRequests;
+    });
+    expect(offlineRequests).toEqual([]);
+
+    await worker.evaluate(async (body) => {
+      await chrome.storage.local.set({
+        openAiTestOnline: true,
+        openAiTestResponses: [
+          { status: 200, delayMs: 5_000, body },
+        ],
+      });
+    }, speechEvents);
+    await selectTextByPointer(page, '#copy', 'vote');
+    await expect
+      .poll(() => pronunciationStatus.textContent())
+      .toBe('尚未開始 Pronunciation Playback。');
+    await expect
+      .poll(() =>
+        pronunciation.getByRole('button', { name: '暫停' }).isHidden(),
+      )
+      .toBe(true);
+    await pronunciation.getByRole('button', { name: 'UK English' }).click();
+    await expect
+      .poll(() => pronunciationStatus.textContent())
+      .toContain('正在產生 AI 語音');
+    await pronunciation.getByRole('button', { name: '停止' }).click();
+    await expect
+      .poll(() => pronunciationStatus.textContent())
+      .toContain('已停止');
+    expect(
+      await page.evaluate(() => {
+        const host = document.querySelector<HTMLElement>(
+          '[data-lingo-palette-reading-flow]',
+        );
+        const focused = host?.shadowRoot?.activeElement;
+        return {
+          className:
+            focused instanceof HTMLElement ? focused.className : null,
+          hidden:
+            focused instanceof HTMLButtonElement ? focused.hidden : null,
+        };
+      }),
+    ).toEqual({ className: 'secondary pronunciation-stop', hidden: false });
+    expect(await page.evaluate(() => document.getSelection()?.toString())).toBe(
+      'vote',
+    );
+    await expect
+      .poll(() =>
+        worker.evaluate(async (key) => {
+          const stored = await chrome.storage.local.get(key);
+          const ledger = stored[key] as
+            | { reservations?: Record<string, unknown> }
+            | undefined;
+          return Object.keys(ledger?.reservations ?? {}).length;
+        }, OPENAI_BUDGET_LEDGER_STORAGE_KEY),
+      )
+      .toBe(0);
+    await worker.evaluate(
+      async ([key, prior]) => {
+        if (prior === undefined) await chrome.storage.local.remove(key);
+        else await chrome.storage.local.set({ [key]: prior });
+        await chrome.storage.local.set({
+          openAiTestOnline: true,
+          openAiTestResponses: [],
+        });
+      },
+      [OPENAI_BUDGET_LEDGER_STORAGE_KEY, budgetBefore] as const,
+    );
+  });
   it('opens durable Side Panel Current only for explicit Deep Dive requests', async () => {
     const firstResult = {
       contextualMeaning:
@@ -628,7 +811,7 @@ describe('unpacked extension Reading Flow', () => {
         page
           .getByText(
             new RegExp(
-              `選取內容有 ${measuredLength.toLocaleString('en-US')} 個字元，超過 4,000 個字元上限`,
+              `選取內容有 ${measuredLength.toLocaleString('en-US')} 個字元，超過 Quick Hint 與 Deep Dive 的 4,000 個字元上限；Pronunciation Playback 仍可使用`,
             ),
           )
           .isVisible(),
@@ -639,6 +822,16 @@ describe('unpacked extension Reading Flow', () => {
       .toBe(true);
     await expect
       .poll(() => page.getByRole('button', { name: 'Deep Dive' }).isDisabled())
+      .toBe(true);
+    await expect
+      .poll(() =>
+        page.getByRole('button', { name: 'US English' }).isEnabled(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        page.getByRole('button', { name: 'UK English' }).isEnabled(),
+      )
       .toBe(true);
     expect(
       await page.evaluate(

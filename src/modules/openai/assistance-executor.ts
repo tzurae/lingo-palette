@@ -117,6 +117,7 @@ type AssistanceExecutionContract<Input extends AssistanceExecutionInput> = {
   maximumOutputTokensPerAttempt: number;
   cacheKey(input: Input): string;
   tokenReservation(input: Input): number;
+  estimatedCostUsd?(input: Input): number | null;
 };
 
 export function createAssistanceExecutor<
@@ -166,9 +167,9 @@ export function createAssistanceExecutor<
         if (signal.aborted) throw cancellationFailure(contract.actionLabel);
         const maximumProviderTokensPerAttempt =
           contract.tokenReservation(input);
-        const estimatedCostUsd = estimateOpenAiCost(
-          input.configuration.model.id,
-          {
+        const estimatedCostUsd =
+          contract.estimatedCostUsd?.(input) ??
+          estimateOpenAiCost(input.configuration.model.id, {
             inputTokens:
               maximumProviderTokensPerAttempt -
               contract.maximumOutputTokensPerAttempt,
@@ -176,8 +177,7 @@ export function createAssistanceExecutor<
             outputTokens: contract.maximumOutputTokensPerAttempt,
             reasoningTokens: contract.maximumOutputTokensPerAttempt,
             totalTokens: maximumProviderTokensPerAttempt,
-          },
-        );
+          });
         const reserved = await dependencies.budget.reserve({
           tokens: maximumProviderTokensPerAttempt,
           estimatedCostUsd,
