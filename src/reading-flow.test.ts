@@ -27,6 +27,7 @@ import { BUNDLED_ENGLISH_EVIDENCE_PACK } from './modules/evidence/bundled-englis
 import type { ApprovedReviewItem } from './modules/review/review-generation-harness';
 import {
   APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+  REVIEW_EVIDENCE_STORAGE_KEY,
   REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
   REVIEW_SCHEDULES_STORAGE_KEY,
   REVIEW_SESSIONS_STORAGE_KEY,
@@ -2122,7 +2123,7 @@ describe('unpacked extension Reading Flow', () => {
       .toBe(true);
   }, 60_000);
 
-  it('saves and approves material, resumes a shortened reveal-first Review Session offline, and completes it', async () => {
+  it('records layered evidence, resumes an objective Review Session offline, and advances its schedule', async () => {
     await worker.evaluate(
       async ([
         lookupKey,
@@ -2132,6 +2133,7 @@ describe('unpacked extension Reading Flow', () => {
         schedulesKey,
         sessionsKey,
         markersKey,
+        reviewEvidenceKey,
       ]) => {
         await chrome.storage.local.remove([
           learningKey,
@@ -2139,6 +2141,7 @@ describe('unpacked extension Reading Flow', () => {
           schedulesKey,
           sessionsKey,
           markersKey,
+          reviewEvidenceKey,
         ]);
         await chrome.storage.local.set({
           [lookupKey]: {
@@ -2194,6 +2197,7 @@ describe('unpacked extension Reading Flow', () => {
         REVIEW_SCHEDULES_STORAGE_KEY,
         REVIEW_SESSIONS_STORAGE_KEY,
         REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+        REVIEW_EVIDENCE_STORAGE_KEY,
       ] as const,
     );
 
@@ -2237,7 +2241,9 @@ describe('unpacked extension Reading Flow', () => {
         type: 'contrastive',
         prompt: '<img src=x onerror=alert(1)> Which meaning fits?',
         contextQuote: 'They postponed the vote.',
-        acceptedAnswers: ['<svg onload=alert(2)> delayed it'],
+        targetAnswers: ['<svg onload=alert(2)> delayed it'],
+        acceptableAlternativeAnswers: [],
+        partialAnswers: [],
         distractors: ['cancelled it'],
         correctiveExplanation: 'Postponed means moved to a later time.',
       },
@@ -2294,6 +2300,11 @@ describe('unpacked extension Reading Flow', () => {
           .isVisible(),
       )
       .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.evaluate(() => document.activeElement?.id),
+      )
+      .toBe('review-response');
     expect(
       await sidePanel
         .getByText('<svg onload=alert(2)> delayed it', { exact: true })
@@ -2336,12 +2347,22 @@ describe('unpacked extension Reading Flow', () => {
         .getByText('<svg onload=alert(2)> delayed it', { exact: true })
         .count(),
     ).toBe(0);
-    await sidePanel.getByRole('button', { name: '顯示答案' }).click();
+    await sidePanel.getByRole('textbox', { name: '你的答案' }).fill(
+      '<svg onload=alert(2)> delayed it',
+    );
+    await sidePanel
+      .getByRole('button', { name: '很流暢地想起來' })
+      .click();
     await expect
       .poll(() =>
         sidePanel
           .getByText('<svg onload=alert(2)> delayed it', { exact: true })
           .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel.getByText('Review Judgment: 已展現', { exact: true }).isVisible(),
       )
       .toBe(true);
     expect(await sidePanel.locator('img, svg').count()).toBe(0);
@@ -2361,9 +2382,13 @@ describe('unpacked extension Reading Flow', () => {
       .toBe('返回 Review');
 
     const storedReview = await worker.evaluate(
-      async ([sessionsKey, schedulesKey]) =>
-        chrome.storage.local.get([sessionsKey, schedulesKey]),
-      [REVIEW_SESSIONS_STORAGE_KEY, REVIEW_SCHEDULES_STORAGE_KEY] as const,
+      async ([sessionsKey, schedulesKey, evidenceKey]) =>
+        chrome.storage.local.get([sessionsKey, schedulesKey, evidenceKey]),
+      [
+        REVIEW_SESSIONS_STORAGE_KEY,
+        REVIEW_SCHEDULES_STORAGE_KEY,
+        REVIEW_EVIDENCE_STORAGE_KEY,
+      ] as const,
     );
     expect(storedReview[REVIEW_SESSIONS_STORAGE_KEY]).toMatchObject({
       version: 1,
@@ -2381,11 +2406,62 @@ describe('unpacked extension Reading Flow', () => {
         {
           learningItemId,
           knowledgeDimension: 'contextual-meaning',
-          intervalStage: 0,
-          demonstratedCount: 0,
+          intervalStage: 1,
+          demonstratedCount: 1,
         },
       ],
     });
+    expect(storedReview[REVIEW_EVIDENCE_STORAGE_KEY]).toMatchObject({
+      version: 1,
+      records: [
+        {
+          version: 1,
+          learningItemId,
+          reviewItemId: 'approved-review-postponed',
+          kind: 'objective',
+          responseMethod: 'overt-response',
+          retrievalFluency: 'recalled-fluently',
+          responseText: '<svg onload=alert(2)> delayed it',
+          judgment: 'demonstrated',
+          scheduleTransition: {
+            previous: {
+              intervalStage: 0,
+              demonstratedCount: 0,
+            },
+            next: {
+              intervalStage: 1,
+              demonstratedCount: 1,
+            },
+          },
+        },
+      ],
+    });
+    await sidePanel.getByRole('button', { name: '返回 Review' }).click();
+    await sidePanel.getByText('Review Evidence（1）', { exact: true }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Schedule transition: stage 0 → 1', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Demonstrated count: 0 → 1', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Overt response: <svg onload=alert(2)> delayed it', {
+            exact: true,
+          })
+          .isVisible(),
+      )
+      .toBe(true);
+    expect(await sidePanel.locator('img, svg').count()).toBe(0);
 
     await worker.evaluate(
       async ({ learningKey, approvedKey, schedulesKey, sessionsKey, template }) => {

@@ -274,7 +274,8 @@ li p {
 
 .review-card,
 .review-summary,
-.review-schedule {
+.review-schedule,
+.review-evidence-record {
   display: grid;
   gap: 12px;
   padding: 14px;
@@ -300,12 +301,42 @@ li p {
   padding: 8px 14px;
 }
 
+.review-card label {
+  font-weight: 700;
+}
+
+.review-card textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 84px;
+  padding: 10px;
+  border: 2px solid #64748b;
+  border-radius: 7px;
+  font: inherit;
+  resize: vertical;
+}
+
+.review-evidence ol {
+  display: grid;
+  gap: 10px;
+  padding-left: 20px;
+}
+
+.review-evidence-record {
+  overflow-wrap: anywhere;
+}
+
+.review-fluency-actions {
+  flex-wrap: wrap;
+}
+
 .review-answer {
   padding-top: 12px;
   border-top: 1px solid #cbd5e1;
 }
 
-.review-schedules {
+.review-schedules,
+.review-evidence {
   display: grid;
   gap: 10px;
   margin-top: 18px;
