@@ -120,6 +120,10 @@ _Avoid_: Score, correct or incorrect
 A versioned, language-specific collection of licensed lexical and usage evidence used to validate review items independently of the generating model.
 _Avoid_: Dictionary, model knowledge
 
+**Review Source Authority**:
+The dimension-specific Evidence Pack provenance that authorized an approved Review Item and remains pinned to the resulting Review Evidence. Usage fit requires matching sense/context evidence; grammar pattern requires a source-recorded frame or usage note, or repeated POS-aware corpus attestations.
+_Avoid_: Model rationale, generic citation, cross-dimension evidence
+
 **Review Session**:
 A learner-initiated sequence of due review items, bounded so completing it does not require clearing the entire review queue.
 _Avoid_: Daily test, due-item backlog

@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  measuredReviewKnowledgeDimensionSchema,
+  reviewSourceAuthoritySchema,
+} from './review-source-authority';
 
 export const retrievalFluencySchema = z.enum([
   'did-not-recall',
@@ -22,33 +26,62 @@ export function normalizeReviewAnswer(value: string): string {
 }
 
 const evidenceBaseSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   id: z.string().min(1),
   learningItemId: z.string().min(1),
   reviewItemId: z.string().min(1),
   sessionId: z.string().min(1),
-  knowledgeDimension: z.literal('contextual-meaning'),
+  knowledgeDimension: measuredReviewKnowledgeDimensionSchema,
   recordedAt: z.iso.datetime(),
+  sourceAuthority: reviewSourceAuthoritySchema.optional(),
 });
 
-export const reviewEvidenceSchema = z.discriminatedUnion('kind', [
-  evidenceBaseSchema
-    .extend({
-      kind: z.literal('self-assessed'),
-      responseMethod: z.literal('covert-recall'),
-      retrievalFluency: retrievalFluencySchema,
-    })
-    .strict(),
-  evidenceBaseSchema
-    .extend({
-      kind: z.literal('objective'),
-      responseMethod: z.literal('overt-response'),
-      retrievalFluency: retrievalFluencySchema,
-      responseText: z.string().min(1),
-      judgment: reviewJudgmentSchema,
-    })
-    .strict(),
-]);
+export const reviewEvidenceSchema = z
+  .discriminatedUnion('kind', [
+    evidenceBaseSchema
+      .extend({
+        kind: z.literal('self-assessed'),
+        responseMethod: z.literal('covert-recall'),
+        retrievalFluency: retrievalFluencySchema,
+      })
+      .strict(),
+    evidenceBaseSchema
+      .extend({
+        kind: z.literal('objective'),
+        responseMethod: z.literal('overt-response'),
+        retrievalFluency: retrievalFluencySchema,
+        responseText: z.string().min(1),
+        judgment: reviewJudgmentSchema,
+      })
+      .strict(),
+  ])
+  .superRefine((evidence, context) => {
+    if (evidence.version === 1) {
+      if (
+        evidence.knowledgeDimension !== 'contextual-meaning' ||
+        evidence.sourceAuthority !== undefined
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message:
+            'Version 1 Review Evidence is legacy contextual meaning without source authority.',
+        });
+      }
+      return;
+    }
+    if (
+      evidence.sourceAuthority === undefined ||
+      evidence.sourceAuthority.knowledgeDimension !==
+        evidence.knowledgeDimension
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['sourceAuthority'],
+        message:
+          'Version 2 Review Evidence requires matching dimension-specific source authority.',
+      });
+    }
+  });
 
 export type RetrievalFluency = z.infer<typeof retrievalFluencySchema>;
 export type ReviewJudgment = z.infer<typeof reviewJudgmentSchema>;

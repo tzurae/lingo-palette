@@ -54,6 +54,35 @@ function approvedItem(
   };
 }
 
+function approvedDimensionItem(
+  id: string,
+  learningItemId: string,
+  knowledgeDimension: 'usage-fit' | 'grammar-pattern',
+): ApprovedReviewItem {
+  const base = approvedItem(id, learningItemId);
+  const relevantEvidence =
+    knowledgeDimension === 'usage-fit'
+      ? [...BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits]
+      : [...BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns];
+  return {
+    ...base,
+    knowledgeDimension,
+    provenance: {
+      ...base.provenance,
+      relevantEvidence,
+      sourceAuthority: {
+        knowledgeDimension,
+        evidence: relevantEvidence.map((entry) => ({
+          evidenceId: entry.id,
+          sourceId: entry.sourceId,
+          sourceVersion: entry.sourceVersion,
+          authority: entry.authority,
+        })),
+      },
+    },
+  };
+}
+
 describe('Review Session store', () => {
   it('selects the first five unique due Learning Items by the deterministic rank', async () => {
     const storage = memoryStorage();
@@ -828,5 +857,181 @@ describe('Review Session store', () => {
       status: 'started',
       session: { reviewItemIds: ['review-due-now'] },
     });
+  });
+
+  it('selects one due dimension per Learning Item and records independent authority-pinned evidence', async () => {
+    const storage = memoryStorage();
+    let nextId = 0;
+    const store = createReviewSessionStore(storage, {
+      id: () => `dimension-evidence-${nextId++}`,
+      now: () => '2026-08-15T12:00:00.000Z',
+    });
+    await store.approve(
+      approvedDimensionItem(
+        'review-grammar-a',
+        'learning-a',
+        'grammar-pattern',
+      ),
+      {
+        dueAt: '2026-08-10T00:00:00.000Z',
+        demonstratedCount: 2,
+        intervalStage: 2,
+      },
+    );
+    await store.approve(
+      approvedDimensionItem('review-usage-a', 'learning-a', 'usage-fit'),
+      {
+        dueAt: '2026-08-11T00:00:00.000Z',
+        demonstratedCount: 0,
+        intervalStage: 5,
+      },
+    );
+    await store.approve(
+      approvedDimensionItem('review-usage-b', 'learning-b', 'usage-fit'),
+      {
+        dueAt: '2026-08-10T00:00:00.000Z',
+        demonstratedCount: 0,
+        intervalStage: 0,
+      },
+    );
+    const learningItems = [
+      {
+        id: 'learning-a',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        status: 'active' as const,
+      },
+      {
+        id: 'learning-b',
+        createdAt: '2026-08-02T00:00:00.000Z',
+        status: 'active' as const,
+      },
+    ];
+
+    const started = await store.start(learningItems);
+    expect(started).toMatchObject({
+      status: 'started',
+      session: {
+        reviewItemIds: ['review-usage-b', 'review-grammar-a'],
+        current: {
+          knowledgeDimension: 'usage-fit',
+          attemptKind: 'objective',
+        },
+      },
+    });
+    if (started.status === 'unavailable') {
+      throw new Error('Expected a cross-dimension Review Session.');
+    }
+    await store.answer(started.session.id, {
+      retrievalFluency: 'recalled-fluently',
+      responseText: 'Answer for review-usage-b',
+    });
+    const advanced = await store.advance(started.session.id);
+    expect(advanced).toMatchObject({
+      status: 'active',
+      session: {
+        current: {
+          knowledgeDimension: 'grammar-pattern',
+          attemptKind: 'objective',
+        },
+      },
+    });
+    await store.answer(started.session.id, {
+      retrievalFluency: 'recalled-with-effort',
+      responseText: 'Alternative for review-grammar-a',
+    });
+    await store.advance(started.session.id);
+
+    await expect(store.snapshot(learningItems)).resolves.toMatchObject({
+      activeSession: null,
+      schedules: expect.arrayContaining([
+        expect.objectContaining({
+          learningItemId: 'learning-a',
+          knowledgeDimension: 'grammar-pattern',
+          intervalStage: 1,
+          demonstratedCount: 2,
+          dueAt: '2026-08-18T12:00:00.000Z',
+        }),
+        expect.objectContaining({
+          learningItemId: 'learning-a',
+          knowledgeDimension: 'usage-fit',
+          intervalStage: 5,
+          demonstratedCount: 0,
+          dueAt: '2026-08-11T00:00:00.000Z',
+        }),
+        expect.objectContaining({
+          learningItemId: 'learning-b',
+          knowledgeDimension: 'usage-fit',
+          intervalStage: 1,
+          demonstratedCount: 1,
+          dueAt: '2026-08-18T12:00:00.000Z',
+        }),
+      ]),
+      evidence: [
+        {
+          version: 2,
+          knowledgeDimension: 'usage-fit',
+          judgment: 'demonstrated',
+          sourceAuthority: {
+            knowledgeDimension: 'usage-fit',
+          },
+        },
+        {
+          version: 2,
+          knowledgeDimension: 'grammar-pattern',
+          judgment: 'acceptable-alternative',
+          sourceAuthority: {
+            knowledgeDimension: 'grammar-pattern',
+          },
+        },
+      ],
+    });
+  });
+
+  it('does not schedule a contextual Review Item carrying cross-dimension source authority', async () => {
+    const usageItem = approvedDimensionItem(
+      'review-cross-authority',
+      'learning-cross-authority',
+      'usage-fit',
+    );
+    const storage = memoryStorage();
+    await storage.set({
+      [APPROVED_REVIEW_ITEMS_STORAGE_KEY]: {
+        version: 1,
+        records: [
+          {
+            ...usageItem,
+            knowledgeDimension: 'contextual-meaning',
+          },
+        ],
+      },
+      [REVIEW_SCHEDULES_STORAGE_KEY]: {
+        version: 1,
+        records: [
+          {
+            version: 1,
+            learningItemId: 'learning-cross-authority',
+            knowledgeDimension: 'contextual-meaning',
+            dueAt: '2026-08-01T00:00:00.000Z',
+            demonstratedCount: 0,
+            intervalStage: 0,
+          },
+        ],
+      },
+    });
+    const store = createReviewSessionStore(storage, {
+      id: () => 'cross-authority-session',
+      now: () => '2026-08-15T12:00:00.000Z',
+    });
+    await expect(
+      store.start([
+        {
+          id: 'learning-cross-authority',
+          createdAt: '2026-08-01T00:00:00.000Z',
+          status: 'active',
+        },
+      ]),
+    ).rejects.toThrow(
+      'Review Item source authority must match its Knowledge Dimension.',
+    );
   });
 });

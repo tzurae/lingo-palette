@@ -19,6 +19,9 @@ import type {
   RetrievalFluency,
   ReviewJudgment,
 } from '../../src/modules/review/review-evidence';
+import type {
+  MeasuredReviewKnowledgeDimension,
+} from '../../src/modules/review/review-source-authority';
 import {
   APPROVED_REVIEW_ITEMS_STORAGE_KEY,
   REVIEW_EVIDENCE_STORAGE_KEY,
@@ -272,7 +275,10 @@ function renderReviewEvidence(snapshot: ReviewSessionSnapshot): HTMLElement {
         'strong',
         evidence.kind === 'objective' ? '客觀 Review Evidence' : '自我評估 Review Evidence',
       ),
-      labelledText('Knowledge dimension', evidence.knowledgeDimension),
+      labelledText(
+        'Knowledge dimension',
+        reviewKnowledgeDimensionLabel(evidence.knowledgeDimension),
+      ),
       labelledText(
         'Retrieval Fluency',
         retrievalFluencyLabel(evidence.retrievalFluency),
@@ -286,6 +292,19 @@ function renderReviewEvidence(snapshot: ReviewSessionSnapshot): HTMLElement {
       record.append(
         labelledText('Overt response', evidence.responseText),
         labelledText('Review Judgment', reviewJudgmentLabel(evidence.judgment)),
+      );
+    }
+    if (evidence.sourceAuthority !== undefined) {
+      record.append(
+        labelledText(
+          'Source authority',
+          evidence.sourceAuthority.evidence
+            .map(
+              (entry) =>
+                `${entry.sourceId} ${entry.sourceVersion} · ${entry.authority} · ${entry.evidenceId}`,
+            )
+            .join('；'),
+        ),
       );
     }
     record.append(
@@ -344,7 +363,10 @@ function renderReviewSession(
     return;
   }
   card.append(
-    labelledText('Knowledge dimension', current.knowledgeDimension),
+    labelledText(
+      'Knowledge dimension',
+      reviewKnowledgeDimensionLabel(current.knowledgeDimension),
+    ),
     labelledText(
       'Review mode',
       current.attemptKind === 'objective' ? '客觀校準' : '自我評估',
@@ -1204,6 +1226,14 @@ function labelledText(
   if (className !== undefined) paragraph.className = className;
   paragraph.append(element('strong', `${label}: `), document.createTextNode(text));
   return paragraph;
+}
+
+function reviewKnowledgeDimensionLabel(
+  value: MeasuredReviewKnowledgeDimension,
+): string {
+  if (value === 'contextual-meaning') return '語境意義';
+  if (value === 'usage-fit') return '語境用法適切性';
+  return '文法模式';
 }
 
 function retrievalFluencyLabel(value: RetrievalFluency): string {

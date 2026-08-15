@@ -10,6 +10,7 @@ import {
   type StagedEvidencePack,
 } from './evidence-pack-lifecycle';
 import {
+  BUNDLED_EVIDENCE_PACK_VERSION,
   MAX_EVIDENCE_PACK_COMPRESSED_BYTES,
   MAX_EVIDENCE_PACK_INSTALLED_BYTES,
 } from './evidence-pack-catalog';
@@ -360,7 +361,7 @@ describe('Evidence Pack lifecycle', () => {
     const storage = createMemoryStorage();
     const lifecycle = createEvidencePackLifecycle({
       extensionVersion: '0.0.0',
-      fallbackEvidencePackVersion: '2025.1.0-minimal.1',
+      fallbackEvidencePackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
       now: () => '2026-08-14T12:00:00.000Z',
       signatureVerifier: createEd25519SignatureVerifier(release.publicKeyBytes),
       storage,
@@ -381,10 +382,10 @@ describe('Evidence Pack lifecycle', () => {
 
     expect(await lifecycle.snapshot()).toMatchObject({
       activeVersion: '2025.1.0',
-      rollbackVersion: '2025.1.0-minimal.1',
+      rollbackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
       revalidationSweeps: [
         {
-          fromEvidencePackVersion: '2025.1.0-minimal.1',
+          fromEvidencePackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
           toEvidencePackVersion: '2025.1.0',
           status: 'pending',
           execution: 'background-budgeted',
@@ -398,12 +399,12 @@ describe('Evidence Pack lifecycle', () => {
       rollbackVersion: '2025.1.0',
       revalidationSweeps: [
         {
-          fromEvidencePackVersion: '2025.1.0-minimal.1',
+          fromEvidencePackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
           toEvidencePackVersion: '2025.1.0',
         },
         {
           fromEvidencePackVersion: '2025.1.0',
-          toEvidencePackVersion: '2025.1.0-minimal.1',
+          toEvidencePackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
           status: 'pending',
         },
       ],

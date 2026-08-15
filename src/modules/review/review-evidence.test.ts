@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   calibrationFor,
+  reviewEvidenceSchema,
   transitionReviewSchedule,
   type ObjectiveReviewEvidence,
   type ReviewEvidence,
@@ -144,5 +145,61 @@ describe('Review Evidence transitions', () => {
       nextAttempt: 'self-assessed',
       selfAssessmentsSinceObjective: 0,
     });
+  });
+
+  it('requires dimension-matched, authoritative provenance for version 2 evidence', () => {
+    const versionedEvidence = {
+      version: 2,
+      id: 'evidence-usage',
+      learningItemId: 'learning-usage',
+      reviewItemId: 'review-usage',
+      sessionId: 'session-usage',
+      knowledgeDimension: 'usage-fit',
+      recordedAt: ATTEMPTED_AT,
+      sourceAuthority: {
+        knowledgeDimension: 'usage-fit',
+        evidence: [
+          {
+            evidenceId: 'usage-fit-1',
+            sourceId: 'oewn',
+            sourceVersion: '2025',
+            authority: 'sense-context',
+          },
+        ],
+      },
+      kind: 'objective',
+      responseMethod: 'overt-response',
+      retrievalFluency: 'recalled-fluently',
+      responseText: 'postponed',
+      judgment: 'demonstrated',
+    } as const;
+
+    expect(reviewEvidenceSchema.safeParse(versionedEvidence).success).toBe(true);
+    expect(
+      reviewEvidenceSchema.safeParse({
+        ...versionedEvidence,
+        sourceAuthority: {
+          ...versionedEvidence.sourceAuthority,
+          knowledgeDimension: 'grammar-pattern',
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      reviewEvidenceSchema.safeParse({
+        ...versionedEvidence,
+        knowledgeDimension: 'grammar-pattern',
+        sourceAuthority: {
+          knowledgeDimension: 'grammar-pattern',
+          evidence: [
+            {
+              evidenceId: 'grammar-corpus-1',
+              sourceId: 'leipzig-eng-news',
+              sourceVersion: '2023',
+              authority: 'pos-aware-corpus-attestation',
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
   });
 });

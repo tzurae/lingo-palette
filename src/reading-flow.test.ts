@@ -2572,6 +2572,328 @@ describe('unpacked extension Reading Flow', () => {
       ],
     });
   }, 60_000);
+
+  it('reviews usage fit and grammar pattern independently across an offline restart', async () => {
+    const usageEvidence = BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0];
+    const grammarEvidence = BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns[0];
+    if (usageEvidence === undefined || grammarEvidence === undefined) {
+      throw new Error('Expected bundled usage-fit and grammar-pattern evidence.');
+    }
+    const approvedItems: ApprovedReviewItem[] = [
+      {
+        version: 1,
+        id: 'review-usage-fit',
+        learningItemId: 'learning-usage-fit',
+        knowledgeDimension: 'usage-fit',
+        task: {
+          type: 'contrastive',
+          prompt: 'Does postpone fit this context?',
+          contextQuote: "let's postpone the exam",
+          targetAnswers: ['fits'],
+          acceptableAlternativeAnswers: ['works here'],
+          partialAnswers: ['probably'],
+          distractors: ['does not fit'],
+          correctiveExplanation:
+            'Postpone fits because the exam was moved to a later time.',
+        },
+        provenance: {
+          approvedAt: '2026-08-15T10:00:00.000Z',
+          generation: { model: 'controlled', promptVersion: 'usage-fit-v1' },
+          validatorVersion: 'usage-fit-validator-v1',
+          evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK.manifest,
+          relevantEvidence: [usageEvidence],
+          sourceAuthority: {
+            knowledgeDimension: 'usage-fit',
+            evidence: [
+              {
+                evidenceId: usageEvidence.id,
+                sourceId: usageEvidence.sourceId,
+                sourceVersion: usageEvidence.sourceVersion,
+                authority: usageEvidence.authority,
+              },
+            ],
+          },
+          licenseAndAttribution:
+            BUNDLED_ENGLISH_EVIDENCE_PACK.licenseAndAttribution,
+          validation: { outcome: 'approved', reasons: [] },
+        },
+      },
+      {
+        version: 1,
+        id: 'review-grammar-pattern',
+        learningItemId: 'learning-grammar-pattern',
+        knowledgeDimension: 'grammar-pattern',
+        task: {
+          type: 'recall',
+          prompt: 'What grammatical pattern does postponed use here?',
+          contextQuote: 'They postponed the vote until next week.',
+          targetAnswers: ['Somebody postpones something'],
+          acceptableAlternativeAnswers: ['They postpone the vote'],
+          partialAnswers: ['transitive verb'],
+          correctiveExplanation:
+            'Postpone is transitive here: somebody postpones something.',
+        },
+        provenance: {
+          approvedAt: '2026-08-15T10:01:00.000Z',
+          generation: {
+            model: 'controlled',
+            promptVersion: 'grammar-pattern-v1',
+          },
+          validatorVersion: 'grammar-pattern-validator-v1',
+          evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK.manifest,
+          relevantEvidence: [grammarEvidence],
+          sourceAuthority: {
+            knowledgeDimension: 'grammar-pattern',
+            evidence: [
+              {
+                evidenceId: grammarEvidence.id,
+                sourceId: grammarEvidence.sourceId,
+                sourceVersion: grammarEvidence.sourceVersion,
+                authority: grammarEvidence.authority,
+              },
+            ],
+          },
+          licenseAndAttribution:
+            BUNDLED_ENGLISH_EVIDENCE_PACK.licenseAndAttribution,
+          validation: { outcome: 'approved', reasons: [] },
+        },
+      },
+    ];
+
+    await worker.evaluate(
+      async ({
+        learningKey,
+        approvedKey,
+        schedulesKey,
+        sessionsKey,
+        markersKey,
+        reviewEvidenceKey,
+        approved,
+      }) => {
+        await chrome.storage.local.remove([
+          sessionsKey,
+          markersKey,
+          reviewEvidenceKey,
+        ]);
+        await chrome.storage.local.set({
+          [learningKey]: {
+            version: 1,
+            learningItems: [
+              {
+                version: 1,
+                id: 'learning-usage-fit',
+                expression: 'postpone',
+                normalizedExpression: 'postpone',
+                sensePin: null,
+                productiveUseIntent: false,
+                createdAt: '2026-08-01T00:00:00.000Z',
+                status: 'active',
+              },
+              {
+                version: 1,
+                id: 'learning-grammar-pattern',
+                expression: 'postponed',
+                normalizedExpression: 'postponed',
+                sensePin: null,
+                productiveUseIntent: false,
+                createdAt: '2026-08-02T00:00:00.000Z',
+                status: 'active',
+              },
+            ],
+            encounters: [],
+            mergeSuggestions: [],
+            history: [],
+          },
+          [approvedKey]: { version: 1, records: approved },
+          [schedulesKey]: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                learningItemId: 'learning-usage-fit',
+                knowledgeDimension: 'usage-fit',
+                dueAt: '2026-08-01T00:00:00.000Z',
+                demonstratedCount: 0,
+                intervalStage: 0,
+              },
+              {
+                version: 1,
+                learningItemId: 'learning-grammar-pattern',
+                knowledgeDimension: 'grammar-pattern',
+                dueAt: '2026-08-02T00:00:00.000Z',
+                demonstratedCount: 0,
+                intervalStage: 0,
+              },
+            ],
+          },
+        });
+      },
+      {
+        learningKey: LEARNING_STATE_STORAGE_KEY,
+        approvedKey: APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+        schedulesKey: REVIEW_SCHEDULES_STORAGE_KEY,
+        sessionsKey: REVIEW_SESSIONS_STORAGE_KEY,
+        markersKey: REVIEW_REVALIDATION_MARKERS_STORAGE_KEY,
+        reviewEvidenceKey: REVIEW_EVIDENCE_STORAGE_KEY,
+        approved: approvedItems,
+      },
+    );
+
+    let sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await sidePanel.getByRole('tab', { name: 'Review' }).click();
+    await sidePanel.getByRole('button', { name: '開始 Review' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Knowledge dimension: 語境用法適切性', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel
+      .getByRole('textbox', { name: '你的答案' })
+      .fill('works here');
+    await sidePanel
+      .getByRole('button', { name: '很流暢地想起來' })
+      .click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Review Judgment: 可接受的替代答案', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel.getByRole('button', { name: '下一題' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Knowledge dimension: 文法模式', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+
+    await sidePanel.close();
+    await context.close();
+    context = await chromium.launchPersistentContext(profilePath, {
+      headless: false,
+      offline: true,
+      args: [
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
+    });
+    worker =
+      context.serviceWorkers()[0] ??
+      (await context.waitForEvent('serviceworker'));
+    sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+    await sidePanel.getByRole('tab', { name: 'Review' }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Knowledge dimension: 文法模式', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel
+      .getByRole('textbox', { name: '你的答案' })
+      .fill('Somebody postpones something');
+    await sidePanel
+      .getByRole('button', { name: '想起來但有點費力' })
+      .click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText('Review Judgment: 已展現', { exact: true })
+          .isVisible(),
+      )
+      .toBe(true);
+    await sidePanel.getByRole('button', { name: '完成 Review' }).click();
+    await expect
+      .poll(() => sidePanel.getByText('本次 Review 已完成').isVisible())
+      .toBe(true);
+
+    const storedReview = await worker.evaluate(
+      async ([schedulesKey, evidenceKey]) =>
+        chrome.storage.local.get([schedulesKey, evidenceKey]),
+      [REVIEW_SCHEDULES_STORAGE_KEY, REVIEW_EVIDENCE_STORAGE_KEY] as const,
+    );
+    expect(storedReview[REVIEW_SCHEDULES_STORAGE_KEY]).toMatchObject({
+      version: 1,
+      records: expect.arrayContaining([
+        expect.objectContaining({
+          learningItemId: 'learning-usage-fit',
+          knowledgeDimension: 'usage-fit',
+          intervalStage: 0,
+        }),
+        expect.objectContaining({
+          learningItemId: 'learning-grammar-pattern',
+          knowledgeDimension: 'grammar-pattern',
+          intervalStage: 1,
+          demonstratedCount: 1,
+        }),
+      ]),
+    });
+    expect(storedReview[REVIEW_EVIDENCE_STORAGE_KEY]).toMatchObject({
+      version: 1,
+      records: [
+        expect.objectContaining({
+          version: 2,
+          reviewItemId: 'review-usage-fit',
+          knowledgeDimension: 'usage-fit',
+          judgment: 'acceptable-alternative',
+          sourceAuthority: {
+            knowledgeDimension: 'usage-fit',
+            evidence: [
+              expect.objectContaining({
+                evidenceId: usageEvidence.id,
+                authority: usageEvidence.authority,
+              }),
+            ],
+          },
+        }),
+        expect.objectContaining({
+          version: 2,
+          reviewItemId: 'review-grammar-pattern',
+          knowledgeDimension: 'grammar-pattern',
+          judgment: 'demonstrated',
+          sourceAuthority: {
+            knowledgeDimension: 'grammar-pattern',
+            evidence: [
+              expect.objectContaining({
+                evidenceId: grammarEvidence.id,
+                authority: grammarEvidence.authority,
+              }),
+            ],
+          },
+        }),
+      ],
+    });
+    await sidePanel.getByRole('button', { name: '返回 Review' }).click();
+    await sidePanel.getByText('Review Evidence（2）', { exact: true }).click();
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText(
+            `Source authority: ${usageEvidence.sourceId} ${usageEvidence.sourceVersion} · ${usageEvidence.authority} · ${usageEvidence.id}`,
+            { exact: true },
+          )
+          .isVisible(),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        sidePanel
+          .getByText(
+            `Source authority: ${grammarEvidence.sourceId} ${grammarEvidence.sourceVersion} · ${grammarEvidence.authority} · ${grammarEvidence.id}`,
+            { exact: true },
+          )
+          .isVisible(),
+      )
+      .toBe(true);
+  }, 60_000);
 });
 function extensionOriginFrom(extensionWorker: Worker): string {
   const url = new URL(extensionWorker.url());

@@ -54,6 +54,64 @@ const groundedCandidate = {
     'Here, “postponed” means that the vote was moved to a later time.',
 };
 
+const usageLearningContext = {
+  learningItem: {
+    ...learningContext.learningItem,
+    expression: 'postpone',
+    normalizedExpression: 'postpone',
+    sensePin: {
+      ...learningContext.learningItem.sensePin,
+      morphology: 'base-form:postpone',
+    },
+  },
+  encounters: [
+    {
+      id: 'encounter-1',
+      learningItemId: 'learning-1',
+      selection: {
+        text: 'postpone',
+        context: { before: "let's ", after: ' the exam' },
+      },
+      sensePin: {
+        evidencePackVersion:
+          BUNDLED_ENGLISH_EVIDENCE_PACK.manifest.version,
+        sourceSenseId: 'oewn:02648898-v',
+        morphology: 'base-form:postpone',
+        partOfSpeech: 'verb',
+      },
+    },
+  ],
+};
+
+const usageFitCandidate = {
+  type: 'contrastive' as const,
+  learningItemId: 'learning-1',
+  encounterId: 'encounter-1',
+  knowledgeDimension: 'usage-fit' as const,
+  prompt: 'Does “postpone” fit this context?',
+  contextQuote: "let's postpone the exam",
+  claimedFit: 'fits' as const,
+  acceptedAnswers: ['yes, it fits this context'],
+  distractors: ['no, it cannot be used with exam'],
+  correctiveExplanation:
+    '“Postpone” fits because the exam will happen at a later time.',
+};
+
+const grammarPatternCandidate = {
+  type: 'contrastive' as const,
+  learningItemId: 'learning-1',
+  encounterId: 'encounter-1',
+  knowledgeDimension: 'grammar-pattern' as const,
+  prompt: 'Which grammar pattern does “postponed” use here?',
+  contextQuote: 'The committee postponed the vote until next week.',
+  claimedPattern: 'Somebody postpones something',
+  claimScope: 'observed' as const,
+  acceptedAnswers: ['subject + postpone + object'],
+  distractors: ['postpone must never take an object'],
+  correctiveExplanation:
+    'Here, “postponed” takes “the vote” as its object.',
+};
+
 const passingEvaluation = {
   grounding: 'pass' as const,
   answerability: 'pass' as const,
@@ -117,6 +175,14 @@ function withTestEvidencePackIntegrity(
       content: JSON.stringify(evidencePack.contextualMeanings),
     },
     {
+      path: 'usage-fits.json',
+      content: JSON.stringify(evidencePack.usageFits),
+    },
+    {
+      path: 'grammar-patterns.json',
+      content: JSON.stringify(evidencePack.grammarPatterns),
+    },
+    {
       path: 'license-and-attribution.json',
       content: JSON.stringify(evidencePack.licenseAndAttribution),
     },
@@ -174,6 +240,16 @@ describe('Review Generation harness', () => {
         ),
       },
       {
+        path: 'usage-fits.json',
+        content: JSON.stringify(BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits),
+      },
+      {
+        path: 'grammar-patterns.json',
+        content: JSON.stringify(
+          BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns,
+        ),
+      },
+      {
         path: 'license-and-attribution.json',
         content: JSON.stringify(
           BUNDLED_ENGLISH_EVIDENCE_PACK.licenseAndAttribution,
@@ -200,6 +276,18 @@ describe('Review Generation harness', () => {
         byteSize: 349,
         sha256:
           'e31fd3bb1cbee8a4ab11bc83c6dcbec80356fe576f6ee4c78dcd0ef7110f6ad6',
+      },
+      {
+        path: 'usage-fits.json',
+        byteSize: 302,
+        sha256:
+          'a095d9707ebc87389a75a3bf3247da76ad3e4fca174df8ae3dac5f9babcd901e',
+      },
+      {
+        path: 'grammar-patterns.json',
+        byteSize: 322,
+        sha256:
+          '9f4b322e09aecf500741a90de5158139750f030e70cacac9bb1318f40779c660',
       },
       {
         path: 'license-and-attribution.json',
@@ -230,7 +318,7 @@ describe('Review Generation harness', () => {
       ),
     );
     expect(BUNDLED_ENGLISH_EVIDENCE_PACK.manifest.compressedSizeBytes).toBe(
-      7_519,
+      7_654,
     );
     expect(
       BUNDLED_ENGLISH_EVIDENCE_PACK.manifest.compressedSizeBytes,
@@ -278,13 +366,13 @@ describe('Review Generation harness', () => {
           evidencePack: expect.objectContaining({
             id: 'lingo-palette-en-contextual-meaning-minimal',
             schemaVersion: 1,
-            version: '2025.1.0-minimal.1',
+            version: '2025.1.0-minimal.2',
             language: 'en',
             minimumExtensionVersion: '0.0.0',
-            compressedSizeBytes: 7_519,
-            installedSizeBytes: 23_003,
+            compressedSizeBytes: 7_654,
+            installedSizeBytes: 23_627,
             contentIdentitySha256:
-              'bdb3f16559eb0576ede76aab11caa853f7902beed2603662845d03281c3aec7f',
+              '9597180e44214c2085173797a718709137f92f44cc0136fc99264697960b5d63',
             sources: [
               expect.objectContaining({
                 id: 'oewn',
@@ -315,6 +403,386 @@ describe('Review Generation harness', () => {
         }),
       }),
     });
+  });
+  it('approves usage fit only from matching sense-context authority and pins it', async () => {
+    const evidencePack = {
+      ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+    };
+    const harness = createHarness({
+      evidencePack,
+      evaluator: {
+        evaluate: async ({ evidence }) => ({
+          ...passingEvaluation,
+          evidenceAssessments: evidence.map(({ id }) => ({
+            evidenceId: id,
+            relation: 'supports' as const,
+          })),
+        }),
+      },
+      id: () => 'review-usage-fit',
+    });
+
+    const result = await harness.review({
+      ...usageLearningContext,
+      generation: {
+        model: generationPin.model,
+        promptVersion: 'usage-fit-prompt-v1',
+      },
+      candidate: usageFitCandidate,
+    });
+
+    expect(result).toEqual({
+      status: 'approved',
+      item: expect.objectContaining({
+        id: 'review-usage-fit',
+        learningItemId: 'learning-1',
+        knowledgeDimension: 'usage-fit',
+        provenance: expect.objectContaining({
+          relevantEvidence: [BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0]],
+          sourceAuthority: {
+            knowledgeDimension: 'usage-fit',
+            evidence: [
+              {
+                evidenceId: BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0].id,
+                sourceId: BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0].sourceId,
+                sourceVersion:
+                  BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0].sourceVersion,
+                authority: 'sense-context',
+              },
+            ],
+          },
+        }),
+      }),
+    });
+  });
+  it('approves an observed grammar pattern from a matching source-recorded frame', async () => {
+    const harness = createHarness({
+      evaluator: {
+        evaluate: async ({ evidence }) => ({
+          ...passingEvaluation,
+          evidenceAssessments: evidence.map(({ id }) => ({
+            evidenceId: id,
+            relation: 'supports' as const,
+          })),
+        }),
+      },
+      id: () => 'review-grammar-pattern',
+    });
+
+    const result = await harness.review({
+      ...learningContext,
+      generation: {
+        model: generationPin.model,
+        promptVersion: 'grammar-pattern-prompt-v1',
+      },
+      candidate: grammarPatternCandidate,
+    });
+
+    expect(result).toEqual({
+      status: 'approved',
+      item: expect.objectContaining({
+        id: 'review-grammar-pattern',
+        knowledgeDimension: 'grammar-pattern',
+        provenance: expect.objectContaining({
+          relevantEvidence: [
+            BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns[0],
+          ],
+          sourceAuthority: {
+            knowledgeDimension: 'grammar-pattern',
+            evidence: [
+              expect.objectContaining({
+                evidenceId:
+                  BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns[0].id,
+                authority: 'source-recorded-frame',
+              }),
+            ],
+          },
+        }),
+      }),
+    });
+  });
+  it.each(['lexical-relation', 'frequency'] as const)(
+    'does not let %s evidence approve contextual usage fit',
+    async (authority) => {
+      const evidencePack = withTestEvidencePackIntegrity({
+        ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+        usageFits: [
+          {
+            ...BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0],
+            authority,
+          },
+        ],
+      });
+      const harness = createHarness({
+        evidencePack,
+        evaluator: {
+          evaluate: async ({ evidence }) => ({
+            ...passingEvaluation,
+            evidenceAssessments: evidence.map(({ id }) => ({
+              evidenceId: id,
+              relation: 'supports' as const,
+            })),
+          }),
+        },
+      });
+
+      await expect(
+        harness.review({
+          ...usageLearningContext,
+          generation: generationPin,
+          candidate: usageFitCandidate,
+        }),
+      ).resolves.toEqual({
+        status: 'rejected',
+        reason: 'evidence-unavailable',
+      });
+    },
+  );
+
+  it('rejects usage fit when source context or license provenance does not match', async () => {
+    const wrongContextPack = withTestEvidencePackIntegrity({
+      ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+      usageFits: [
+        {
+          ...BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0],
+          contextQuote: 'They postpone an unrelated launch',
+        },
+      ],
+    });
+    const missingSourceProvenancePack = withTestEvidencePackIntegrity({
+      ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+      usageFits: [
+        {
+          ...BUNDLED_ENGLISH_EVIDENCE_PACK.usageFits[0],
+          sourceId: 'unlicensed-source',
+        },
+      ],
+    });
+    const evaluate = async ({ evidence }: { evidence: readonly { id: string }[] }) => ({
+      ...passingEvaluation,
+      evidenceAssessments: evidence.map(({ id }) => ({
+        evidenceId: id,
+        relation: 'supports' as const,
+      })),
+    });
+
+    await expect(
+      createHarness({
+        evidencePack: wrongContextPack,
+        evaluator: { evaluate },
+      }).review({
+        ...usageLearningContext,
+        generation: generationPin,
+        candidate: usageFitCandidate,
+      }),
+    ).resolves.toEqual({
+      status: 'rejected',
+      reason: 'evidence-unavailable',
+    });
+    await expect(
+      createHarness({
+        evidencePack: missingSourceProvenancePack,
+        evaluator: { evaluate },
+      }).review({
+        ...usageLearningContext,
+        generation: generationPin,
+        candidate: usageFitCandidate,
+      }),
+    ).resolves.toEqual({
+      status: 'rejected',
+      reason: 'evidence-unavailable',
+    });
+  });
+
+  it('requires a source-recorded grammar authority or repeated POS-aware attestations', async () => {
+    const corpusEvidence = [1, 2].map((index) => ({
+      ...BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns[0],
+      id: `corpus-grammar-${index}`,
+      authority: 'pos-aware-corpus-attestation' as const,
+      attestation: `Corpus attestation ${index}`,
+    }));
+    const evaluate = async ({ evidence }: { evidence: readonly { id: string }[] }) => ({
+      ...passingEvaluation,
+      evidenceAssessments: evidence.map(({ id }) => ({
+        evidenceId: id,
+        relation: 'supports' as const,
+      })),
+    });
+    const sourceRecordedUsageNoteHarness = createHarness({
+      evidencePack: withTestEvidencePackIntegrity({
+        ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+        grammarPatterns: [
+          {
+            ...BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns[0],
+            authority: 'source-recorded-usage-note',
+          },
+        ],
+      }),
+      evaluator: { evaluate },
+    });
+    const repeatedCorpusHarness = createHarness({
+      evidencePack: withTestEvidencePackIntegrity({
+        ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+        grammarPatterns: corpusEvidence,
+      }),
+      evaluator: { evaluate },
+    });
+    const partiallySupportedCorpusHarness = createHarness({
+      evidencePack: withTestEvidencePackIntegrity({
+        ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+        grammarPatterns: corpusEvidence,
+      }),
+      evaluator: {
+        evaluate: async ({ evidence }) => ({
+          ...passingEvaluation,
+          evidenceAssessments: evidence.map(({ id }, index) => ({
+            evidenceId: id,
+            relation: index === 0 ? ('supports' as const) : ('unknown' as const),
+          })),
+        }),
+      },
+    });
+    const mixedAuthorityHarness = createHarness({
+      evidencePack: withTestEvidencePackIntegrity({
+        ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+        grammarPatterns: [
+          BUNDLED_ENGLISH_EVIDENCE_PACK.grammarPatterns[0],
+          ...corpusEvidence,
+        ],
+      }),
+      evaluator: {
+        evaluate: async ({ evidence }) => ({
+          ...passingEvaluation,
+          evidenceAssessments: evidence.map(({ id }, index) => ({
+            evidenceId: id,
+            relation: index < 2 ? ('supports' as const) : ('unknown' as const),
+          })),
+        }),
+      },
+    });
+    const oneObservationHarness = createHarness({
+      evidencePack: withTestEvidencePackIntegrity({
+        ...BUNDLED_ENGLISH_EVIDENCE_PACK,
+        grammarPatterns: [corpusEvidence[0]!],
+      }),
+      evaluator: { evaluate },
+    });
+
+    await expect(
+      sourceRecordedUsageNoteHarness.review({
+        ...learningContext,
+        generation: generationPin,
+        candidate: grammarPatternCandidate,
+      }),
+    ).resolves.toMatchObject({
+      status: 'approved',
+      item: {
+        provenance: {
+          sourceAuthority: {
+            evidence: [{ authority: 'source-recorded-usage-note' }],
+          },
+        },
+      },
+    });
+    await expect(
+      repeatedCorpusHarness.review({
+        ...learningContext,
+        generation: generationPin,
+        candidate: grammarPatternCandidate,
+      }),
+    ).resolves.toMatchObject({
+      status: 'approved',
+      item: {
+        knowledgeDimension: 'grammar-pattern',
+        provenance: {
+          sourceAuthority: {
+            knowledgeDimension: 'grammar-pattern',
+            evidence: [
+              { authority: 'pos-aware-corpus-attestation' },
+              { authority: 'pos-aware-corpus-attestation' },
+            ],
+          },
+        },
+      },
+    });
+    await expect(
+      partiallySupportedCorpusHarness.review({
+        ...learningContext,
+        generation: generationPin,
+        candidate: grammarPatternCandidate,
+      }),
+    ).resolves.toEqual({
+      status: 'rejected',
+      reason: 'evidence-unavailable',
+    });
+    await expect(
+      mixedAuthorityHarness.review({
+        ...learningContext,
+        generation: generationPin,
+        candidate: grammarPatternCandidate,
+      }),
+    ).resolves.toMatchObject({
+      status: 'approved',
+      item: {
+        provenance: {
+          sourceAuthority: {
+            evidence: [
+              {
+                authority: 'source-recorded-frame',
+              },
+            ],
+          },
+        },
+      },
+    });
+    await expect(
+      oneObservationHarness.review({
+        ...learningContext,
+        generation: generationPin,
+        candidate: grammarPatternCandidate,
+      }),
+    ).resolves.toEqual({
+      status: 'rejected',
+      reason: 'evidence-unavailable',
+    });
+  });
+
+  it('rejects unsupported universal grammar rules and cross-dimension payloads', async () => {
+    const harness = createHarness({
+      evaluator: {
+        evaluate: async ({ evidence }) => ({
+          ...passingEvaluation,
+          evidenceAssessments: evidence.map(({ id }) => ({
+            evidenceId: id,
+            relation: 'supports' as const,
+          })),
+        }),
+      },
+    });
+
+    await expect(
+      harness.review({
+        ...learningContext,
+        generation: generationPin,
+        candidate: {
+          ...grammarPatternCandidate,
+          claimScope: 'universal',
+        },
+      }),
+    ).resolves.toEqual({
+      status: 'rejected',
+      reason: 'evidence-unavailable',
+    });
+    await expect(
+      harness.review({
+        ...usageLearningContext,
+        generation: generationPin,
+        candidate: {
+          ...usageFitCandidate,
+          claimedPattern: grammarPatternCandidate.claimedPattern,
+        } as never,
+      }),
+    ).resolves.toEqual({ status: 'rejected', reason: 'invalid-input' });
   });
   it('falls back to grounded recall when a distractor hides a valid alternative', async () => {
     const harness = createHarness({
@@ -433,6 +901,18 @@ describe('Review Generation harness', () => {
 
     expect(await harness.isReusable(approved.item, generation)).toBe(true);
     expect(
+      await harness.isReusable(
+        {
+          ...approved.item,
+          provenance: {
+            ...approved.item.provenance,
+            relevantEvidence: [],
+          },
+        },
+        generation,
+      ),
+    ).toBe(false);
+    expect(
       await harness.isReusable(approved.item, {
         ...generation,
         model: 'gpt-5-mini-2026-06-01',
@@ -455,7 +935,7 @@ describe('Review Generation harness', () => {
           ...BUNDLED_ENGLISH_EVIDENCE_PACK,
           manifest: {
             ...BUNDLED_ENGLISH_EVIDENCE_PACK.manifest,
-            version: '2025.1.0-minimal.2',
+            version: '2025.1.0-minimal.3',
           },
         },
       }).isReusable(approved.item, generation),
