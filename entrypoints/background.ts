@@ -14,6 +14,24 @@ import type {
 } from '../src/modules/learning/messages';
 import { z } from 'zod';
 import {
+  createBrowserApprovedReviewRevalidationPort,
+  createBrowserEvidencePackLifecycleStorage,
+  createTrustedEvidencePackTransport,
+} from '../src/modules/evidence/evidence-pack-browser-adapters';
+import {
+  BUNDLED_EVIDENCE_PACK_VERSION,
+  SUPPORTED_EVIDENCE_PACK_RELEASES,
+} from '../src/modules/evidence/evidence-pack-catalog';
+import {
+  createEvidencePackLifecycle,
+  EvidencePackLifecycleError,
+  packagedEvidenceSignatureVerifier,
+} from '../src/modules/evidence/evidence-pack-lifecycle';
+import type {
+  EvidencePackRequest,
+  EvidencePackResponse,
+} from '../src/modules/evidence/messages';
+import {
   createOpenAiConfigurationStore,
   validateOpenAiConfiguration,
   type OpenAiConfiguration,
@@ -70,6 +88,15 @@ const openAiConfigurationStore = createOpenAiConfigurationStore(
 );
 const budgetLedger = createBudgetLedger(browser.storage.local);
 const lookupRecordStore = createLookupRecordStore(browser.storage.local);
+const evidencePackLifecycle = createEvidencePackLifecycle({
+  extensionVersion: browser.runtime.getManifest().version,
+  fallbackEvidencePackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
+  signatureVerifier: packagedEvidenceSignatureVerifier(),
+  storage: createBrowserEvidencePackLifecycleStorage(browser.storage.local),
+  transport: createTrustedEvidencePackTransport(),
+});
+const approvedReviewRevalidationPort =
+  createBrowserApprovedReviewRevalidationPort(browser.storage.local);
 const learningItemStore = createLearningItemStore(
   browser.storage.local,
   createStoredEligibleSenseLookup(browser.storage.local),
@@ -298,6 +325,9 @@ const serializeDeepDiveCacheWrite = createSerialExecutor();
 const serializeDeepDiveLifecycle = createSerialExecutor();
 const serializeOpenAiConfigurationMutation = createSerialExecutor();
 
+const serializeEvidencePackLifecycle = createSerialExecutor();
+const evidencePackRevalidationAlarm = 'evidence-pack-revalidation';
+const evidencePackRevalidationBatchSize = 25;
 let backgroundInitialization = Promise.resolve();
 
 export default defineBackground(() => {
@@ -310,6 +340,7 @@ async function initializeBackgroundState(): Promise<void> {
     accessLevel: 'TRUSTED_CONTEXTS',
   });
   await deepDiveStateStore.interruptRunning();
+  await serializeEvidencePackLifecycle(processEvidencePackRevalidationBatch);
 }
 
 function registerBackgroundListeners(): void {
@@ -328,9 +359,18 @@ function registerBackgroundListeners(): void {
       .then(([activeTab]) => injectReadingFlow(activeTab?.id, true));
   });
 
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== evidencePackRevalidationAlarm) return;
+    void continueEvidencePackRevalidation();
+  });
+
   browser.runtime.onMessage.addListener(
     (
-      message: ReadingFlowRequest | OpenAiSettingsRequest | LearningRequest,
+      message:
+        | ReadingFlowRequest
+        | OpenAiSettingsRequest
+        | LearningRequest
+        | EvidencePackRequest,
       sender,
     ):
       | Promise<
@@ -341,6 +381,7 @@ function registerBackgroundListeners(): void {
           | RecentResponse
           | PronunciationAudioResponse
           | LearningResponse
+          | EvidencePackResponse
         >
       | undefined => {
       if (message.type === 'site-status') {
@@ -390,6 +431,14 @@ function registerBackgroundListeners(): void {
         message.type === 'set-productive-use-intent'
       ) {
         return handleLearningRequest(message, sender);
+      }
+      if (
+        message.type === 'get-evidence-pack-status' ||
+        message.type === 'inspect-evidence-pack' ||
+        message.type === 'confirm-evidence-pack-activation' ||
+        message.type === 'rollback-evidence-pack'
+      ) {
+        return handleEvidencePackRequest(message, sender);
       }
       return handleOpenAiSettings(message, sender);
     },
@@ -967,6 +1016,128 @@ async function handleLearningRequest(
       message:
         error instanceof Error ? error.message : '無法更新 Saved Learning Items。',
     };
+  }
+}
+
+async function handleEvidencePackRequest(
+  message: EvidencePackRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<EvidencePackResponse> {
+  if (!isTrustedExtensionSender(sender)) {
+    return {
+      status: 'failed',
+      code: 'untrusted-sender',
+      message: '只有 Lingo Palette Settings 可以管理 Evidence Pack。',
+    };
+  }
+  await backgroundInitialization;
+  return serializeEvidencePackLifecycle(async () => {
+    try {
+      if (message.type === 'inspect-evidence-pack') {
+        return {
+          status: 'awaiting-confirmation',
+          inspection: await evidencePackLifecycle.inspect({
+            language: message.language,
+            version: message.version,
+          }),
+        };
+      }
+      if (message.type === 'confirm-evidence-pack-activation') {
+        await evidencePackLifecycle.confirmActivation({
+          candidateId: message.candidateId,
+        });
+        void continueEvidencePackRevalidation();
+        return {
+          status: 'activated',
+          snapshot: await evidencePackSnapshot(),
+        };
+      }
+      if (message.type === 'rollback-evidence-pack') {
+        await evidencePackLifecycle.rollback();
+        void continueEvidencePackRevalidation();
+        return {
+          status: 'rolled-back',
+          snapshot: await evidencePackSnapshot(),
+        };
+      }
+      return {
+        status: 'loaded',
+        snapshot: await evidencePackSnapshot(),
+      };
+    } catch (error) {
+      const code =
+        error instanceof EvidencePackLifecycleError
+          ? error.code
+          : 'unexpected-error';
+      return {
+        status: 'failed',
+        code,
+        message: evidencePackFailureMessage(code),
+      };
+    }
+  });
+}
+
+async function processEvidencePackRevalidationBatch(): Promise<void> {
+  try {
+    const status = await evidencePackLifecycle.processNextRevalidationBatch(
+      approvedReviewRevalidationPort,
+      evidencePackRevalidationBatchSize,
+    );
+    if (status === 'pending') await scheduleEvidencePackRevalidationRetry();
+  } catch {
+    await scheduleEvidencePackRevalidationRetry();
+  }
+}
+
+async function scheduleEvidencePackRevalidationRetry(): Promise<void> {
+  try {
+    await browser.alarms.create(evidencePackRevalidationAlarm, {
+      delayInMinutes: 1,
+    });
+  } catch {
+    // The durable sweep remains pending and initialization retries after restart.
+  }
+}
+
+async function continueEvidencePackRevalidation(): Promise<void> {
+  await backgroundInitialization;
+  await serializeEvidencePackLifecycle(processEvidencePackRevalidationBatch);
+}
+
+async function evidencePackSnapshot() {
+  return {
+    state: await evidencePackLifecycle.snapshot(),
+    supportedReleases: SUPPORTED_EVIDENCE_PACK_RELEASES,
+  };
+}
+
+function evidencePackFailureMessage(code: string): string {
+  switch (code) {
+    case 'unsupported-release':
+      return '此擴充功能版本不支援指定的 Evidence Pack。';
+    case 'download-failed':
+      return 'Evidence Pack 下載失敗；目前已啟用版本未變更。請檢查網路後重試。';
+    case 'size-limit':
+      return 'Evidence Pack 超過允許的下載或安裝大小；目前已啟用版本未變更。';
+    case 'signature-invalid':
+      return 'Evidence Pack manifest 簽章無效；未安裝也未啟用。';
+    case 'manifest-invalid':
+      return 'Evidence Pack manifest、來源或授權清單無效；未安裝也未啟用。';
+    case 'extension-incompatible':
+      return 'Evidence Pack 需要較新的 Lingo Palette 版本。';
+    case 'payload-invalid':
+      return 'Evidence Pack 不是有效的 data-only gzip package；未安裝也未啟用。';
+    case 'integrity-invalid':
+      return 'Evidence Pack 大小或 SHA-256 驗證失敗；未安裝也未啟用。';
+    case 'candidate-missing':
+      return '先前檢查的 Evidence Pack 暫存內容已不存在，請重新檢查。';
+    case 'rollback-unavailable':
+      return '目前沒有可回復的上一個 known-good Evidence Pack。';
+    case 'storage-invalid':
+      return '本機 Evidence Pack 狀態不完整；目前 active pointer 未改寫。';
+    default:
+      return 'Evidence Pack 操作失敗；目前已啟用版本未變更。';
   }
 }
 

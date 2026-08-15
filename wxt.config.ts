@@ -8,13 +8,18 @@ export default defineConfig({
     minimum_chrome_version: '116',
     permissions: [
       'activeTab',
+      'alarms',
       'commands',
       'scripting',
       'sidePanel',
       'storage',
+      'unlimitedStorage',
     ],
     optional_host_permissions: ['http://*/*', 'https://*/*'],
-    host_permissions: ['https://api.openai.com/*'],
+    host_permissions: [
+      'https://api.openai.com/*',
+      'https://tzurae.github.io/lingo-palette-evidence/*',
+    ],
     action: {
       default_title: 'Open Lingo Palette',
     },

@@ -132,6 +132,45 @@
         </p>
         <p id="budget-status" role="status" aria-live="polite"></p>
       </section>
+      <section aria-labelledby="evidence-pack-title">
+        <h2 id="evidence-pack-title">English Evidence Pack</h2>
+        <p>
+          Review 只使用通過簽章、來源、授權、大小與 SHA-256 驗證的 data-only
+          Evidence Pack。檢查與下載不會改變目前版本；你確認後才會原子啟用。
+        </p>
+        <dl class="status-grid">
+          <div>
+            <dt>目前啟用</dt>
+            <dd id="active-evidence-pack">尚未啟用</dd>
+          </div>
+          <div>
+            <dt>可回復版本</dt>
+            <dd id="rollback-evidence-pack">無</dd>
+          </div>
+        </dl>
+        <div class="evidence-actions">
+          <button id="inspect-evidence-pack" type="button">
+            檢查並下載 Evidence Pack
+          </button>
+          <button id="rollback-evidence-pack-button" type="button" disabled>
+            回復上一個 known-good 版本
+          </button>
+        </div>
+        <div id="evidence-pack-disclosure" class="disclosure" hidden>
+          <h3>啟用前確認</h3>
+          <p id="evidence-pack-size-disclosure"></p>
+          <p>來源與授權 attribution：</p>
+          <ul id="evidence-pack-attributions"></ul>
+          <button id="confirm-evidence-pack" type="button">
+            確認啟用這個已驗證版本
+          </button>
+        </div>
+        <p
+          id="evidence-pack-status"
+          role="status"
+          aria-live="polite"
+        ></p>
+      </section>
       <section aria-labelledby="sites-title">
         <h2 id="sites-title">已啟用的網站</h2>
         <p>只有你個別啟用的網站可以顯示選取工具。</p>

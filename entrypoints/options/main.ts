@@ -1,3 +1,13 @@
+import {
+  BUNDLED_EVIDENCE_PACK_VERSION,
+  SUPPORTED_EVIDENCE_PACK_RELEASES,
+} from '../../src/modules/evidence/evidence-pack-catalog';
+import {
+  parseEvidencePackResponse,
+  type EvidencePackRequest,
+  type EvidencePackResponse,
+  type EvidencePackStatusSnapshot,
+} from '../../src/modules/evidence/messages';
 import { validateDailyBudget } from '../../src/modules/openai/budget-ledger';
 import {
   CURATED_REASONING_EFFORTS,
@@ -71,6 +81,33 @@ const budgetStatus = requiredElement<HTMLParagraphElement>('budget-status');
 const enabledSites = requiredElement<HTMLUListElement>('enabled-sites');
 const sitesStatus = requiredElement<HTMLParagraphElement>('sites-status');
 const commandBinding = requiredElement<HTMLParagraphElement>('command-binding');
+const activeEvidencePack =
+  requiredElement<HTMLElement>('active-evidence-pack');
+const rollbackEvidencePack =
+  requiredElement<HTMLElement>('rollback-evidence-pack');
+const inspectEvidencePack = requiredElement<HTMLButtonElement>(
+  'inspect-evidence-pack',
+);
+const rollbackEvidencePackButton = requiredElement<HTMLButtonElement>(
+  'rollback-evidence-pack-button',
+);
+const evidencePackDisclosure = requiredElement<HTMLDivElement>(
+  'evidence-pack-disclosure',
+);
+const evidencePackSizeDisclosure = requiredElement<HTMLParagraphElement>(
+  'evidence-pack-size-disclosure',
+);
+const evidencePackAttributions = requiredElement<HTMLUListElement>(
+  'evidence-pack-attributions',
+);
+const confirmEvidencePack = requiredElement<HTMLButtonElement>(
+  'confirm-evidence-pack',
+);
+const evidencePackStatus = requiredElement<HTMLParagraphElement>(
+  'evidence-pack-status',
+);
+let stagedEvidencePackCandidateId: string | null = null;
+let evidencePackRollbackAvailable = false;
 let hasStoredOpenAiApiKey = false;
 
 openAiForm.addEventListener('submit', (event) => {
@@ -94,12 +131,22 @@ openAiModel.addEventListener('change', () => {
   });
 });
 personalInstructions.addEventListener('input', renderInstructionCount);
+inspectEvidencePack.addEventListener('click', () => {
+  void inspectSupportedEvidencePack();
+});
+confirmEvidencePack.addEventListener('click', () => {
+  void activateInspectedEvidencePack();
+});
+rollbackEvidencePackButton.addEventListener('click', () => {
+  void rollbackActiveEvidencePack();
+});
 renderModelOptions();
 renderInstructionCount();
 
 void renderOpenAiSettings();
 void renderEnabledSites();
 void renderCommandBinding();
+void renderEvidencePackStatus();
 
 function renderModelOptions(): void {
   const descriptions = ['預設', '較低成本'] as const;
@@ -396,6 +443,182 @@ async function sendOpenAiSettingsMessage(
 ): Promise<OpenAiSettingsResponse> {
   const response: unknown = await browser.runtime.sendMessage(message);
   return parseOpenAiSettingsResponse(response);
+}
+
+async function renderEvidencePackStatus(): Promise<void> {
+  setEvidencePackBusy(true);
+  try {
+    const response = await sendEvidencePackMessage({
+      type: 'get-evidence-pack-status',
+    });
+    if (response.status === 'failed') {
+      evidencePackStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'loaded') {
+      evidencePackStatus.textContent = 'Evidence Pack 狀態回應不完整。';
+      return;
+    }
+    applyEvidencePackSnapshot(response.snapshot);
+    evidencePackStatus.textContent =
+      response.snapshot.state.activeVersion === null
+        ? `目前使用內建 known-good ${BUNDLED_EVIDENCE_PACK_VERSION}；可檢查完整 Evidence Pack。`
+        : '目前 active pointer 與已驗證 package 已從本機儲存空間復原。';
+  } catch {
+    evidencePackStatus.textContent =
+      '無法讀取 Evidence Pack 狀態；目前 active pointer 未變更。';
+  } finally {
+    setEvidencePackBusy(false);
+  }
+}
+
+async function inspectSupportedEvidencePack(): Promise<void> {
+  const release = SUPPORTED_EVIDENCE_PACK_RELEASES[0];
+  if (release === undefined) {
+    evidencePackStatus.textContent = '此擴充功能沒有支援的 Evidence Pack release。';
+    return;
+  }
+  evidencePackStatus.textContent =
+    '正在下載並驗證 manifest 簽章、來源、授權、大小與 SHA-256…';
+  evidencePackDisclosure.hidden = true;
+  stagedEvidencePackCandidateId = null;
+  setEvidencePackBusy(true);
+  try {
+    const response = await sendEvidencePackMessage({
+      type: 'inspect-evidence-pack',
+      language: release.language,
+      version: release.version,
+    });
+    if (response.status === 'failed') {
+      evidencePackStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'awaiting-confirmation') {
+      evidencePackStatus.textContent = 'Evidence Pack 檢查回應不完整。';
+      return;
+    }
+    stagedEvidencePackCandidateId = response.inspection.candidateId;
+    evidencePackSizeDisclosure.textContent =
+      `${response.inspection.version} 已通過驗證。下載大小 ${formatByteCount(response.inspection.compressedSizeBytes)}；安裝大小 ${formatByteCount(response.inspection.installedSizeBytes)}；${response.inspection.sourceCount} 個 pinned sources。`;
+    evidencePackAttributions.replaceChildren(
+      ...response.inspection.attributions.map(createListItem),
+    );
+    evidencePackDisclosure.hidden = false;
+    evidencePackStatus.textContent =
+      '候選版本只存於 staging；請檢查 disclosure 後明確確認，才會改變 active pointer。';
+    confirmEvidencePack.focus();
+  } catch {
+    evidencePackStatus.textContent =
+      '無法檢查 Evidence Pack；目前 active pointer 未變更。';
+  } finally {
+    setEvidencePackBusy(false);
+  }
+}
+
+async function activateInspectedEvidencePack(): Promise<void> {
+  if (stagedEvidencePackCandidateId === null) {
+    evidencePackStatus.textContent = '請先檢查並下載 Evidence Pack。';
+    return;
+  }
+  const candidateId = stagedEvidencePackCandidateId;
+  setEvidencePackBusy(true);
+  try {
+    const response = await sendEvidencePackMessage({
+      type: 'confirm-evidence-pack-activation',
+      candidateId,
+    });
+    if (response.status === 'failed') {
+      evidencePackStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'activated') {
+      evidencePackStatus.textContent = 'Evidence Pack 啟用回應不完整。';
+      return;
+    }
+    applyEvidencePackSnapshot(response.snapshot);
+    stagedEvidencePackCandidateId = null;
+    evidencePackDisclosure.hidden = true;
+    evidencePackStatus.textContent =
+      `已原子啟用 ${response.snapshot.state.activeVersion}；舊版與既有 Review Item provenance 均未改寫。`;
+    inspectEvidencePack.focus();
+  } catch {
+    evidencePackStatus.textContent =
+      'Evidence Pack 啟用失敗；目前 active pointer 未變更。';
+  } finally {
+    setEvidencePackBusy(false);
+  }
+}
+
+async function rollbackActiveEvidencePack(): Promise<void> {
+  setEvidencePackBusy(true);
+  try {
+    const response = await sendEvidencePackMessage({
+      type: 'rollback-evidence-pack',
+    });
+    if (response.status === 'failed') {
+      evidencePackStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'rolled-back') {
+      evidencePackStatus.textContent = 'Evidence Pack rollback 回應不完整。';
+      return;
+    }
+    applyEvidencePackSnapshot(response.snapshot);
+    evidencePackDisclosure.hidden = true;
+    stagedEvidencePackCandidateId = null;
+    evidencePackStatus.textContent =
+      `已原子回復 ${activeEvidencePackVersion(response.snapshot)}；受影響 Review Items 已排入 background-budgeted revalidation。`;
+    inspectEvidencePack.focus();
+  } catch {
+    evidencePackStatus.textContent =
+      'Evidence Pack rollback 失敗；目前 active pointer 未變更。';
+  } finally {
+    setEvidencePackBusy(false);
+  }
+}
+
+function applyEvidencePackSnapshot(
+  snapshot: EvidencePackStatusSnapshot,
+): void {
+  const { activeVersion, rollbackVersion } = snapshot.state;
+  activeEvidencePack.textContent = activeEvidencePackVersion(snapshot);
+  rollbackEvidencePack.textContent = rollbackVersion ?? '無';
+  evidencePackRollbackAvailable = rollbackVersion !== null;
+  const release = snapshot.supportedReleases[0];
+  inspectEvidencePack.textContent =
+    release === undefined
+      ? '沒有支援的 Evidence Pack'
+      : activeVersion === null
+        ? `檢查並下載 ${release.version}`
+        : activeVersion === release.version
+          ? `重新驗證 ${release.version}`
+          : `檢查更新 ${release.version}`;
+}
+
+function activeEvidencePackVersion(
+  snapshot: EvidencePackStatusSnapshot,
+): string {
+  return snapshot.state.activeVersion ?? BUNDLED_EVIDENCE_PACK_VERSION;
+}
+
+function setEvidencePackBusy(busy: boolean): void {
+  inspectEvidencePack.disabled = busy;
+  confirmEvidencePack.disabled =
+    busy || stagedEvidencePackCandidateId === null;
+  rollbackEvidencePackButton.disabled =
+    busy || !evidencePackRollbackAvailable;
+}
+
+function formatByteCount(bytes: number): string {
+  const mebibytes = bytes / (1024 * 1024);
+  return `${new Intl.NumberFormat('zh-Hant', { maximumFractionDigits: 1 }).format(mebibytes)} MiB`;
+}
+
+async function sendEvidencePackMessage(
+  message: EvidencePackRequest,
+): Promise<EvidencePackResponse> {
+  const response: unknown = await browser.runtime.sendMessage(message);
+  return parseEvidencePackResponse(response);
 }
 
 async function renderEnabledSites(): Promise<void> {

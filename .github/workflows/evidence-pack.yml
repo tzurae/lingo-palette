@@ -1,0 +1,122 @@
+name: Evidence Pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      signature_base64:
+        description: Detached Ed25519 signature produced offline for the exact manifest.json bytes
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/evidence-pack.yml'
+      - 'scripts/build-english-evidence-pack.mjs'
+      - 'src/modules/evidence/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/evidence-pack.yml'
+      - 'scripts/build-english-evidence-pack.mjs'
+      - 'src/modules/evidence/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+
+jobs:
+  verify:
+    name: Build and verify pinned release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/cache@v4
+        with:
+          path: .evidence-pack-cache
+          key: evidence-pack-2025.1.0-oewn-wordfreq-leipzig
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - name: Verify lifecycle, fail-closed, and browser-storage contracts
+        run: >-
+          pnpm exec vitest run
+          src/modules/evidence/evidence-pack-lifecycle.test.ts
+          src/modules/evidence/evidence-pack-browser-adapters.test.ts
+      - name: Rebuild and validate the pinned data-only package
+        run: pnpm evidence:build
+        env:
+          EVIDENCE_PACK_UNSIGNED_VALIDATION: 'true'
+      - name: Attach Product Owner offline signature
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SIGNATURE_BASE64: ${{ inputs.signature_base64 }}
+        run: >-
+          node -e "const fs=require('node:fs');
+          const signature=Buffer.from(process.env.SIGNATURE_BASE64,'base64');
+          if(signature.length!==64) throw new Error('Expected a 64-byte Ed25519 signature.');
+          fs.writeFileSync('.evidence-pack-dist/en/2025.1.0/manifest.sig',signature);"
+      - name: Verify the exact signed release through the production seam
+        if: github.event_name == 'workflow_dispatch'
+        run: pnpm exec vitest run src/modules/evidence/evidence-pack-built-release.test.ts
+      - name: Upload verified release artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-pack-2025.1.0
+          path: .evidence-pack-dist
+          if-no-files-found: error
+
+  publish:
+    name: Publish approved release
+    if: github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment:
+      name: evidence-pack-production
+      url: https://tzurae.github.io/lingo-palette-evidence/en/2025.1.0/manifest.json
+    steps:
+      - name: Download verified release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: evidence-pack-2025.1.0
+          path: release-dist
+      - name: Check out fixed Evidence Pack origin
+        uses: actions/checkout@v4
+        with:
+          repository: tzurae/lingo-palette-evidence
+          token: ${{ secrets.EVIDENCE_PACK_PUBLISH_TOKEN }}
+          path: evidence-origin
+      - name: Publish only the verified release files
+        run: |
+          set -euo pipefail
+          source_dir=release-dist/en/2025.1.0
+          target_dir=evidence-origin/en/2025.1.0
+          if [ -d "$target_dir" ]; then
+            for file in manifest.json manifest.sig evidence-pack.json.gz; do
+              if [ ! -f "$target_dir/$file" ] || ! cmp -s "$source_dir/$file" "$target_dir/$file"; then
+                echo "::error::Evidence Pack 2025.1.0 is immutable; publish changed bytes under a new semantic version."
+                exit 1
+              fi
+            done
+            echo "Evidence Pack 2025.1.0 is already published with identical bytes."
+          else
+            mkdir -p "$target_dir"
+            cp "$source_dir/manifest.json" "$target_dir/manifest.json"
+            cp "$source_dir/manifest.sig" "$target_dir/manifest.sig"
+            cp "$source_dir/evidence-pack.json.gz" "$target_dir/evidence-pack.json.gz"
+          fi
+          cd evidence-origin
+          git config user.name 'lingo-palette-evidence-bot'
+          git config user.email 'lingo-palette-evidence-bot@users.noreply.github.com'
+          git add en/2025.1.0
+          git diff --cached --quiet || git commit -m 'Publish English Evidence Pack 2025.1.0'
+          git push

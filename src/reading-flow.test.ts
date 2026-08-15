@@ -20,6 +20,9 @@ import {
 import { ACTIVE_EVIDENCE_INDEX_STORAGE_KEY } from './modules/learning/evidence-pack-lookup';
 import { LEARNING_STATE_STORAGE_KEY } from './modules/learning/learning-item-store';
 import { LOOKUP_RECORDS_STORAGE_KEY } from './modules/learning/lookup-record';
+import { EVIDENCE_PACK_STATE_STORAGE_KEY } from './modules/evidence/evidence-pack-browser-adapters';
+import { BUNDLED_EVIDENCE_PACK_VERSION } from './modules/evidence/evidence-pack-catalog';
+import { SIGNED_EVIDENCE_PACK_FIXTURE } from './modules/evidence/signed-evidence-pack-fixture';
 
 declare const chrome: typeof browser;
 
@@ -1565,6 +1568,131 @@ describe('unpacked extension Reading Flow', () => {
     }, OPENAI_BUDGET_SETTINGS_STORAGE_KEY);
   });
 
+  it('installs a signed Evidence Pack and recovers the active pack after an offline browser restart', async () => {
+    const assetBytes = new Map([
+      [
+        'manifest.json',
+        Buffer.from(
+          SIGNED_EVIDENCE_PACK_FIXTURE.manifestBase64,
+          'base64',
+        ),
+      ],
+      [
+        'manifest.sig',
+        Buffer.from(
+          SIGNED_EVIDENCE_PACK_FIXTURE.signatureBase64,
+          'base64',
+        ),
+      ],
+      [
+        'evidence-pack.json.gz',
+        Buffer.from(
+          SIGNED_EVIDENCE_PACK_FIXTURE.payloadBase64,
+          'base64',
+        ),
+      ],
+    ]);
+    await context.route(
+      'https://tzurae.github.io/lingo-palette-evidence/**',
+      async (route) => {
+        const asset = new URL(route.request().url()).pathname.split('/').at(-1);
+        const body = asset === undefined ? undefined : assetBytes.get(asset);
+        if (body === undefined) {
+          await route.abort('failed');
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          headers: { 'Content-Length': String(body.byteLength) },
+          body,
+        });
+      },
+    );
+    const settings = await context.newPage();
+    await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
+    await expect
+      .poll(() => settings.locator('#inspect-evidence-pack').count())
+      .toBe(1);
+    await settings.locator('#inspect-evidence-pack').click();
+    await expect
+      .poll(() => settings.locator('#evidence-pack-status').textContent())
+      .toContain('候選版本只存於 staging');
+    await settings.locator('#confirm-evidence-pack').click();
+    await expect
+      .poll(() => settings.locator('#evidence-pack-status').textContent())
+      .toContain('已原子啟用 2025.1.0');
+    expect(
+      await worker.evaluate(
+        async (key) => (await chrome.storage.local.get(key))[key],
+        EVIDENCE_PACK_STATE_STORAGE_KEY,
+      ),
+    ).toMatchObject({
+      activeVersion: '2025.1.0',
+      rollbackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
+    });
+
+    await settings.close();
+    await context.close();
+    context = await chromium.launchPersistentContext(profilePath, {
+      headless: false,
+      offline: true,
+      args: [
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
+    });
+    worker =
+      context.serviceWorkers()[0] ??
+      (await context.waitForEvent('serviceworker'));
+    await worker.evaluate(
+      async ([siteOrigin, scriptId]) => {
+        const registrations =
+          await chrome.scripting.getRegisteredContentScripts();
+        if (registrations.some(({ id }) => id === scriptId)) return;
+        await chrome.scripting.registerContentScripts([
+          {
+            id: scriptId,
+            js: ['/reading-flow.js'],
+            matches: [`${siteOrigin}/*`],
+            allFrames: true,
+            matchOriginAsFallback: true,
+            persistAcrossSessions: true,
+          },
+        ]);
+      },
+      [origin, scriptIdFor(origin)] as const,
+    );
+    const restartedSettings = await context.newPage();
+    await restartedSettings.goto(
+      `${extensionOriginFrom(worker)}/options.html`,
+    );
+    await expect
+      .poll(() =>
+        restartedSettings.locator('#active-evidence-pack').textContent(),
+      )
+      .toBe('2025.1.0');
+    await expect
+      .poll(() =>
+        restartedSettings
+          .locator('#rollback-evidence-pack-button')
+          .isDisabled(),
+      )
+      .toBe(false);
+    await restartedSettings.locator('#rollback-evidence-pack-button').click();
+    await expect
+      .poll(() =>
+        restartedSettings.locator('#active-evidence-pack').textContent(),
+      )
+      .toBe(BUNDLED_EVIDENCE_PACK_VERSION);
+    await restartedSettings.close();
+
+    await context.setOffline(false);
+    page = await context.newPage();
+    await page.goto(origin);
+  }, 60_000);
+
   it('recovers a completed Lookup in Recent after an offline browser restart while Saved remains empty', async () => {
     await worker.evaluate(async () => {
       await chrome.storage.local.set({
@@ -1660,7 +1788,7 @@ describe('unpacked extension Reading Flow', () => {
         sidePanel.getByText('目前沒有已儲存的 Learning Items。').isVisible(),
       )
       .toBe(true);
-  });
+  }, 60_000);
 
   it('saves, classifies, resolves, undoes, and recovers Learning Items offline', async () => {
     await worker.evaluate(
