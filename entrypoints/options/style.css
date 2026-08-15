@@ -74,6 +74,41 @@ textarea {
   min-height: auto;
 }
 
+.status-grid,
+.evidence-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.status-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 16px 0;
+}
+
+.status-grid div,
+.disclosure {
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+}
+
+.status-grid dt {
+  font-weight: 650;
+}
+
+.status-grid dd {
+  margin: 4px 0 0;
+}
+
+.disclosure {
+  margin-top: 16px;
+  background: #f8fafc;
+}
+
+.disclosure h3 {
+  margin-top: 0;
+}
+
 .warning,
 .error {
   color: #991b1b;

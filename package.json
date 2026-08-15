@@ -11,19 +11,23 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "evidence:build": "node --experimental-strip-types scripts/build-english-evidence-pack.mjs",
     "postinstall": "wxt prepare"
   },
   "dependencies": {
+    "@noble/ed25519": "3.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@msgpack/msgpack": "3.1.2",
     "@types/chrome": "^0.2.5",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@wxt-dev/module-react": "^1.2.2",
+    "fflate": "0.8.2",
     "playwright-core": "^1.62.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",

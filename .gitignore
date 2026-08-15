@@ -3,6 +3,8 @@ node_modules/
 .output/
 coverage/
 test-results/
+.evidence-pack-cache/
+.evidence-pack-dist/
 playwright-report/
 *.log
 
