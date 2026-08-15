@@ -3,17 +3,10 @@ import { parseDeepDive } from '../reading-flow/deep-dive';
 import { parseQuickHint } from '../reading-flow/quick-hint';
 import { selectionSchema } from '../reading-flow/selection-parser';
 import type { LookupRecord, LookupRecordAction } from './lookup-record';
+import { sensePinSchema, type SensePin } from './sense-pin';
 
 export const LEARNING_STATE_STORAGE_KEY = 'learningStateV1';
 
-const sensePinSchema = z
-  .object({
-    evidencePackVersion: z.string().min(1),
-    sourceSenseId: z.string().min(1),
-    morphology: z.string().min(1),
-    partOfSpeech: z.string().min(1),
-  })
-  .strict();
 const actionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('quick-hint'), result: z.unknown() }).strict(),
   z.object({ type: z.literal('deep-dive'), result: z.unknown() }).strict(),
@@ -141,7 +134,6 @@ const storedStateSchema = z
   })
   .strict();
 
-export type SensePin = z.infer<typeof sensePinSchema>;
 export type LearningItem = z.infer<typeof learningItemSchema>;
 export type Encounter = Omit<z.infer<typeof encounterSchema>, 'action'> & {
   action: LookupRecordAction;
