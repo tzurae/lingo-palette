@@ -1,0 +1,67 @@
+name: Supported Page Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/supported-page-smoke.yml'
+      - 'entrypoints/**'
+      - 'src/reading-flow.test.ts'
+      - 'src/modules/reading-flow/**'
+      - 'src/modules/smoke/**'
+      - 'scripts/verify-smoke-evidence.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'wxt.config.ts'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/supported-page-smoke.yml'
+      - 'entrypoints/**'
+      - 'src/reading-flow.test.ts'
+      - 'src/modules/reading-flow/**'
+      - 'src/modules/smoke/**'
+      - 'package.json'
+      - 'scripts/verify-smoke-evidence.ts'
+      - 'pnpm-lock.yaml'
+      - 'wxt.config.ts'
+
+jobs:
+  supported-pages:
+    name: ${{ matrix.os }} automated surface smoke
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            evidence_platform: windows
+          - os: macos-15
+            evidence_platform: macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright-core install chromium
+      - run: pnpm typecheck
+      - name: Exercise complete extension-owned flows and the maintained page matrix
+        run: pnpm exec vitest run src/modules/smoke/smoke-evidence.test.ts src/reading-flow.test.ts --reporter=verbose
+        env:
+          SMOKE_EVIDENCE_DIR: .smoke-results
+          SMOKE_FULL_MATRIX: 'true'
+      - name: Reject incomplete automated smoke evidence before upload
+        run: pnpm smoke:verify --automated .smoke-results/supported-pages-${{ matrix.evidence_platform }}.json
+      - name: Upload auditable page and latency evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: supported-page-automated-partial-${{ runner.os }}
+          path: .smoke-results
+          if-no-files-found: error

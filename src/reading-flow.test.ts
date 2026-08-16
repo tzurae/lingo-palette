@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { release, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chromium } from 'playwright-core';
-import type { BrowserContext, Frame, Page, Worker } from 'playwright-core';
+import type { BrowserContext, Frame, Locator, Page, Worker } from 'playwright-core';
 import { scriptIdFor } from './modules/reading-flow/site-permission';
 import {
   DEFAULT_OPENAI_CONFIGURATION,
@@ -41,12 +42,36 @@ import {
   PORTABLE_PREFERENCES_STORAGE_KEY,
   PORTABLE_RECORD_PROVENANCE_STORAGE_KEY,
 } from './modules/portability/portable-backup';
+import {
+  SMOKE_ANNOUNCEMENT_STATES,
+  SMOKE_EXCLUDED_SURFACE_KINDS,
+  SMOKE_FLOW_NAMES,
+  summarizeSmokeLatencyValues,
+} from './modules/smoke/smoke-evidence';
+import {
+  SUPPORTED_PAGE_SMOKE_PLAN,
+  type SupportedPageSmokeCase,
+} from './modules/smoke/supported-page-smoke-plan';
 
 declare const chrome: typeof browser;
 
 const executeFile = promisify(execFile);
 
 const extensionPath = resolve('.output/chrome-mv3');
+type SmokeFlowName = (typeof SMOKE_FLOW_NAMES)[number];
+type SmokeAnnouncementState = (typeof SMOKE_ANNOUNCEMENT_STATES)[number];
+type SmokeExcludedSurfaceKind =
+  (typeof SMOKE_EXCLUDED_SURFACE_KINDS)[number];
+type SupportedPageRun = {
+  pageCase: SupportedPageSmokeCase;
+  milliseconds: number;
+};
+
+const observedSmokeFlows = new Map<SmokeFlowName, string>();
+const observedAnnouncementStates = new Map<SmokeAnnouncementState, string>();
+const observedExcludedSurfaces = new Map<SmokeExcludedSurfaceKind, string>();
+let completedSupportedPageRuns: readonly SupportedPageRun[] = [];
+let completedSmokeLatencyGroups: readonly SmokeLatencyGroup[] = [];
 
 let context: BrowserContext;
 let page: Page;
@@ -54,10 +79,21 @@ let worker: Worker;
 let origin: string;
 let profilePath: string;
 let closeServer: () => Promise<void>;
+let serverPort: number;
 
 beforeAll(async () => {
   const server = createServer((request, response) => {
+    if (request.url === '/excluded.pdf') {
+      response.setHeader('Content-Type', 'application/pdf');
+      response.end(minimalPdf());
+      return;
+    }
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
+    const smokeFixture = renderSmokeFixture(request.url, request.headers.host);
+    if (smokeFixture !== null) {
+      response.end(smokeFixture);
+      return;
+    }
     if (request.url === '/frame') {
       response.end(`<!doctype html><html><body>
         <button id="frame-position">Frame reading position</button>
@@ -85,6 +121,7 @@ beforeAll(async () => {
     throw new Error('Expected a local test server port.');
   }
   origin = `http://127.0.0.1:${address.port}`;
+  serverPort = address.port;
   closeServer = () => {
     const closed = Promise.withResolvers<void>();
     server.close((error) =>
@@ -108,6 +145,7 @@ beforeAll(async () => {
   manifest.host_permissions = [
     ...(manifest.host_permissions ?? []),
     `${origin}/*`,
+    ...smokeMatchPatterns(),
   ];
   await writeFile(manifestPath, JSON.stringify(manifest));
 
@@ -121,6 +159,7 @@ beforeAll(async () => {
       '--no-first-run',
       '--no-default-browser-check',
       '--enable-caret-browsing',
+      '--host-resolver-rules=MAP *.lingo.test 127.0.0.1',
     ],
   });
   
@@ -130,6 +169,7 @@ beforeAll(async () => {
   await worker.evaluate(
     async ([
       siteOrigin,
+      smokePatterns,
       scriptId,
       configurationKey,
       apiKeyKey,
@@ -139,7 +179,7 @@ beforeAll(async () => {
         {
           id: scriptId,
           js: ['/reading-flow.js'],
-          matches: [`${siteOrigin}/*`],
+          matches: [`${siteOrigin}/*`, ...smokePatterns],
           allFrames: true,
           matchOriginAsFallback: true,
           persistAcrossSessions: true,
@@ -178,6 +218,7 @@ beforeAll(async () => {
     },
     [
       origin,
+      smokeMatchPatterns(),
       scriptIdFor(origin),
       OPENAI_CONFIGURATION_STORAGE_KEY,
       OPENAI_API_KEY_STORAGE_KEY,
@@ -252,7 +293,7 @@ describe('unpacked extension Reading Flow', () => {
     );
 
     const quickHintButton = page.getByRole('button', { name: '快速提示' });
-    await quickHintButton.click();
+    await activateByKeyboard(quickHintButton);
     await expect
       .poll(() => page.getByRole('status').textContent())
       .toContain('快速提示已完成；第 1 次 provider 嘗試成功，共 18 tokens');
@@ -279,6 +320,14 @@ describe('unpacked extension Reading Flow', () => {
         after: expect.stringMatching(/^ the vote until next week\./),
       },
     });
+    observedSmokeFlows.set(
+      'quick-hint',
+      'Quick Hint completed from an Enter key activation and retained visible focus.',
+    );
+    observedAnnouncementStates.set(
+      'result-count',
+      'Quick Hint announced completion with an explicit total token count.',
+    );
   });
 
 
@@ -326,15 +375,21 @@ describe('unpacked extension Reading Flow', () => {
     const pronunciationStatus = pronunciation.locator(
       '.pronunciation-status',
     );
-    await pronunciation.getByRole('button', { name: 'US English' }).click();
+    await activateByKeyboard(
+      pronunciation.getByRole('button', { name: 'US English' }),
+    );
     await expect
       .poll(() => pronunciationStatus.textContent())
       .toContain('第 1 次語音嘗試未完成');
-    await pronunciation.getByRole('button', { name: '暫停' }).click();
+    await activateByKeyboard(
+      pronunciation.getByRole('button', { name: '暫停' }),
+    );
     await expect
       .poll(() => pronunciationStatus.textContent())
       .toContain('已暫停');
-    await pronunciation.getByRole('button', { name: '繼續' }).click();
+    await activateByKeyboard(
+      pronunciation.getByRole('button', { name: '繼續' }),
+    );
     await expect
       .poll(() => pronunciationStatus.textContent(), { timeout: 5_000 })
       .toContain(
@@ -389,7 +444,9 @@ describe('unpacked extension Reading Flow', () => {
       });
     });
     await selectTextByPointer(page, '#copy', 'postpone');
-    await pronunciation.getByRole('button', { name: 'US English' }).click();
+    await activateByKeyboard(
+      pronunciation.getByRole('button', { name: 'US English' }),
+    );
     await expect
       .poll(() => pronunciationStatus.textContent())
       .toContain('本機快取');
@@ -416,11 +473,15 @@ describe('unpacked extension Reading Flow', () => {
         pronunciation.getByRole('button', { name: '暫停' }).isHidden(),
       )
       .toBe(true);
-    await pronunciation.getByRole('button', { name: 'UK English' }).click();
+    await activateByKeyboard(
+      pronunciation.getByRole('button', { name: 'UK English' }),
+    );
     await expect
       .poll(() => pronunciationStatus.textContent())
       .toContain('正在產生 AI 語音');
-    await pronunciation.getByRole('button', { name: '停止' }).click();
+    await activateByKeyboard(
+      pronunciation.getByRole('button', { name: '停止' }),
+    );
     await expect
       .poll(() => pronunciationStatus.textContent())
       .toContain('已停止');
@@ -462,6 +523,14 @@ describe('unpacked extension Reading Flow', () => {
         });
       },
       [OPENAI_BUDGET_LEDGER_STORAGE_KEY, budgetBefore] as const,
+    );
+    observedSmokeFlows.set(
+      'pronunciation',
+      'Pronunciation playback, pause, resume, offline cache, and stop completed from keyboard activations with visible focus.',
+    );
+    observedAnnouncementStates.set(
+      'playback',
+      'Playback progress, pause, resume, cache, and stop states were announced in place.',
     );
   });
   it('opens durable Side Panel Current only for explicit Deep Dive requests', async () => {
@@ -519,7 +588,9 @@ describe('unpacked extension Reading Flow', () => {
     }, firstResult);
 
     await selectTextByPointer(page, '#copy', 'postpone');
-    await page.getByRole('button', { name: 'Deep Dive' }).click();
+    await activateByKeyboard(
+      page.getByRole('button', { name: 'Deep Dive' }),
+    );
     await expect
       .poll(() => page.getByRole('status').textContent())
       .toContain('Deep Dive 已在 Side Panel 開始');
@@ -818,6 +889,14 @@ describe('unpacked extension Reading Flow', () => {
       ]),
     );
     await sidePanel.close();
+    observedSmokeFlows.set(
+      'deep-dive-current',
+      'Deep Dive entered stable Side Panel Current from an Enter key activation and preserved keyboard tab navigation.',
+    );
+    observedAnnouncementStates.set(
+      'working',
+      'Deep Dive rendered and announced its in-progress state without moving page focus.',
+    );
   }, 60_000);
 
   it('reports an over-limit Selection without truncating or enabling Quick Hint', async () => {
@@ -916,7 +995,9 @@ describe('unpacked extension Reading Flow', () => {
       return commands.find(({ name }) => name === 'focus-selection-toolbar')
         ?.shortcut;
     });
-    expect(shortcut).toBe('Ctrl+Shift+Y');
+    expect(shortcut).toBe(
+      process.platform === 'darwin' ? 'Command+Shift+L' : 'Ctrl+Shift+Y',
+    );
     const activeTabId = await activeReadingTabId();
     await worker.evaluate(async (tabId) => {
       await chrome.scripting.executeScript({
@@ -1235,6 +1316,10 @@ describe('unpacked extension Reading Flow', () => {
       estimatedCostUsdLimit: 0.5,
     });
     await settings.close();
+    observedAnnouncementStates.set(
+      'budget',
+      'Budget validation and saved-limit status messages were announced in place.',
+    );
   });
 
   it('prevents a stale custom probe from overwriting a newer curated activation', async () => {
@@ -1385,6 +1470,10 @@ describe('unpacked extension Reading Flow', () => {
         await chrome.storage.local.set({ openAiTestOnline: true });
       });
     }
+    observedAnnouncementStates.set(
+      'offline',
+      'The offline cache miss was announced in the anchored status region.',
+    );
   });
 
   it('shows retry waiting, retry exhaustion, and a later successful third attempt', async () => {
@@ -1429,6 +1518,10 @@ describe('unpacked extension Reading Flow', () => {
     await expect
       .poll(() => page.getByRole('status').textContent())
       .toContain('第 3 次 provider 嘗試成功');
+    observedAnnouncementStates.set(
+      'retry',
+      'Retry waiting, exhaustion, and subsequent success were announced in place.',
+    );
   });
 
   it('cancels active provider work, preserves Selection, and releases its reservation', async () => {
@@ -1584,6 +1677,10 @@ describe('unpacked extension Reading Flow', () => {
         [key]: { tokenLimit: 25_000, estimatedCostUsdLimit: 0.5 },
       });
     }, OPENAI_BUDGET_SETTINGS_STORAGE_KEY);
+    observedAnnouncementStates.set(
+      'error',
+      'Every terminal provider and local budget error was announced while Selection remained intact.',
+    );
   });
 
   it('installs a signed Evidence Pack and recovers the active pack after an offline browser restart', async () => {
@@ -1631,11 +1728,11 @@ describe('unpacked extension Reading Flow', () => {
     await expect
       .poll(() => settings.locator('#inspect-evidence-pack').count())
       .toBe(1);
-    await settings.locator('#inspect-evidence-pack').click();
+    await activateByKeyboard(settings.locator('#inspect-evidence-pack'));
     await expect
       .poll(() => settings.locator('#evidence-pack-status').textContent())
       .toContain('候選版本只存於 staging');
-    await settings.locator('#confirm-evidence-pack').click();
+    await activateByKeyboard(settings.locator('#confirm-evidence-pack'));
     await expect
       .poll(() => settings.locator('#evidence-pack-status').textContent())
       .toContain('已原子啟用 2025.1.0');
@@ -1698,7 +1795,9 @@ describe('unpacked extension Reading Flow', () => {
           .isDisabled(),
       )
       .toBe(false);
-    await restartedSettings.locator('#rollback-evidence-pack-button').click();
+    await activateByKeyboard(
+      restartedSettings.locator('#rollback-evidence-pack-button'),
+    );
     await expect
       .poll(() =>
         restartedSettings.locator('#active-evidence-pack').textContent(),
@@ -1709,6 +1808,10 @@ describe('unpacked extension Reading Flow', () => {
     await context.setOffline(false);
     page = await context.newPage();
     await page.goto(origin);
+    observedSmokeFlows.set(
+      'evidence-pack-status',
+      'Evidence Pack inspect, activate, recovery, and rollback completed from keyboard activations with visible focus.',
+    );
   }, 60_000);
 
   it('recovers a completed Lookup in Recent after an offline browser restart while Saved remains empty', async () => {
@@ -1790,7 +1893,7 @@ describe('unpacked extension Reading Flow', () => {
     });
     const sidePanel = await context.newPage();
     await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
-    await sidePanel.getByRole('tab', { name: 'Recent' }).click();
+    await activateByKeyboard(sidePanel.getByRole('tab', { name: 'Recent' }));
     await expect
       .poll(() => sidePanel.getByText('offline Recent lookup').isVisible())
       .toBe(true);
@@ -1800,12 +1903,16 @@ describe('unpacked extension Reading Flow', () => {
       )
       .toBe(true);
     expect(await sidePanel.locator('img').count()).toBe(0);
-    await sidePanel.getByRole('tab', { name: 'Saved' }).click();
+    await activateByKeyboard(sidePanel.getByRole('tab', { name: 'Saved' }));
     await expect
       .poll(() =>
         sidePanel.getByText('目前沒有已儲存的 Learning Items。').isVisible(),
       )
       .toBe(true);
+    observedSmokeFlows.set(
+      'recent',
+      'Recent opened from an Enter key activation and exposed the recovered Lookup as text.',
+    );
   }, 60_000);
 
   it('saves, classifies, resolves, undoes, and recovers Learning Items offline', async () => {
@@ -2130,6 +2237,14 @@ describe('unpacked extension Reading Flow', () => {
     await expect
       .poll(() => sidePanel.getByText('已選擇保持分開').isVisible())
       .toBe(true);
+    observedSmokeFlows.set(
+      'saved',
+      'Saved learning items, classifications, merge choices, undo, and recovery remained keyboard-operable with textual states.',
+    );
+    observedAnnouncementStates.set(
+      'saved',
+      'Saved and merge outcomes were exposed as persistent textual status rather than color alone.',
+    );
   }, 60_000);
 
   it('records layered evidence, resumes an objective Review Session offline, and advances its schedule', async () => {
@@ -2295,11 +2410,13 @@ describe('unpacked extension Reading Flow', () => {
       },
     );
 
-    await sidePanel.getByRole('tab', { name: 'Review' }).click();
+    await activateByKeyboard(sidePanel.getByRole('tab', { name: 'Review' }));
     await expect
       .poll(() => sidePanel.getByRole('button', { name: '開始 Review' }).isVisible())
       .toBe(true);
-    await sidePanel.getByRole('button', { name: '開始 Review' }).click();
+    await activateByKeyboard(
+      sidePanel.getByRole('button', { name: '開始 Review' }),
+    );
     await expect
       .poll(() =>
         sidePanel
@@ -2359,9 +2476,9 @@ describe('unpacked extension Reading Flow', () => {
     await sidePanel.getByRole('textbox', { name: '你的答案' }).fill(
       '<svg onload=alert(2)> delayed it',
     );
-    await sidePanel
-      .getByRole('button', { name: '很流暢地想起來' })
-      .click();
+    await activateByKeyboard(
+      sidePanel.getByRole('button', { name: '很流暢地想起來' }),
+    );
     await expect
       .poll(() =>
         sidePanel
@@ -2380,7 +2497,9 @@ describe('unpacked extension Reading Flow', () => {
         sidePanel.evaluate(() => document.activeElement?.textContent?.trim()),
       )
       .toBe('完成 Review');
-    await sidePanel.getByRole('button', { name: '完成 Review' }).click();
+    await activateByKeyboard(
+      sidePanel.getByRole('button', { name: '完成 Review' }),
+    );
     await expect
       .poll(() => sidePanel.getByText('本次 Review 已完成').isVisible())
       .toBe(true);
@@ -2580,6 +2699,10 @@ describe('unpacked extension Reading Flow', () => {
         },
       ],
     });
+    observedSmokeFlows.set(
+      'review-session',
+      'A complete Review Session was entered and answered from keyboard activations with visible focus and textual evidence.',
+    );
   }, 60_000);
 
   it('reviews receptive and productive dimensions across an offline restart with opt-in scheduling', async () => {
@@ -3251,11 +3374,13 @@ describe('unpacked extension Reading Flow', () => {
           '--no-first-run',
           '--no-default-browser-check',
           '--enable-caret-browsing',
+          '--host-resolver-rules=MAP *.lingo.test 127.0.0.1',
         ],
       });
       worker =
         context.serviceWorkers()[0] ??
         (await context.waitForEvent('serviceworker'));
+      page = await context.newPage();
     };
     await worker.evaluate(
       async ({
@@ -3663,9 +3788,9 @@ describe('unpacked extension Reading Flow', () => {
         .locator('label[for="import-portable-backup-file"]')
         .evaluate((element) => getComputedStyle(element).outlineWidth),
     ).toBe('2px');
-    await options
-      .getByRole('button', { name: '選擇位置並匯出備份' })
-      .click();
+    await activateByKeyboard(
+      options.getByRole('button', { name: '選擇位置並匯出備份' }),
+    );
     await expect
       .poll(() =>
         options.evaluate(
@@ -3760,9 +3885,9 @@ describe('unpacked extension Reading Flow', () => {
         path: resolve('docs/assets/issue-16-import-preview.png'),
         fullPage: true,
       });
-      await options
-        .getByRole('button', { name: '確認原子提交' })
-        .click();
+      await activateByKeyboard(
+        options.getByRole('button', { name: '確認原子提交' }),
+      );
       await expect
         .poll(() =>
           options
@@ -3823,7 +3948,338 @@ describe('unpacked extension Reading Flow', () => {
       activeVersion: deviceState.activeVersion,
     });
     await options.close();
+    observedSmokeFlows.set(
+      'backup-import',
+      'Backup export and the reviewed atomic import commit completed from keyboard focus and Enter activation.',
+    );
+    observedAnnouncementStates.set(
+      'import',
+      'Import preview, commit, and report states were announced in the Settings status region.',
+    );
   }, 60_000);
+
+  it('passes the maintained 20-page, 10-domain Supported Reading Surface smoke matrix', async () => {
+    const pageRuns: SupportedPageRun[] = [];
+    expect(SUPPORTED_PAGE_SMOKE_PLAN).toHaveLength(20);
+    expect(
+      new Set(SUPPORTED_PAGE_SMOKE_PLAN.map((pageCase) => pageCase.domain)).size,
+    ).toBe(10);
+    expect(
+      new Set(SUPPORTED_PAGE_SMOKE_PLAN.map((pageCase) => pageCase.surface)),
+    ).toEqual(new Set(['top-level', 'same-origin-embedded']));
+    expect(
+      new Set(
+        SUPPORTED_PAGE_SMOKE_PLAN.map((pageCase) => pageCase.selectionKind),
+      ),
+    ).toEqual(new Set(['word', 'phrase', 'sentence', 'multi-sentence']));
+    expect(
+      new Set(SUPPORTED_PAGE_SMOKE_PLAN.map((pageCase) => pageCase.zoomPercent)),
+    ).toEqual(new Set([100, 200]));
+    await worker.evaluate(
+      async ([id, matches]) => {
+        const registration = {
+          id,
+          js: ['/reading-flow.js'],
+          matches: [...matches],
+          allFrames: true,
+          matchOriginAsFallback: true,
+          persistAcrossSessions: true,
+        };
+        const existing = await chrome.scripting.getRegisteredContentScripts({
+          ids: [id],
+        });
+        if (existing.length === 0) {
+          await chrome.scripting.registerContentScripts([registration]);
+        } else {
+          await chrome.scripting.updateContentScripts([registration]);
+        }
+      },
+      [
+        scriptIdFor(origin),
+        [`${origin}/*`, ...smokeMatchPatterns()],
+      ] as const,
+    );
+    await page.emulateMedia({
+      reducedMotion: 'reduce',
+      forcedColors: 'active',
+    });
+
+    for (const pageCase of SUPPORTED_PAGE_SMOKE_PLAN) {
+      await page.goto(smokePageUrl(pageCase));
+      const tabId = await activeReadingTabId();
+      await worker.evaluate(
+        ([id, zoom]) => chrome.tabs.setZoom(id, zoom),
+        [tabId, pageCase.zoomPercent / 100] as const,
+      );
+      const target = await smokeSelectionTarget(pageCase);
+      await expect
+        .poll(
+          () =>
+            target
+              .locator('[data-lingo-palette-reading-flow-initialized]')
+              .count(),
+          {
+            message: `Expected Reading Flow initialization for smoke case ${pageCase.id}.`,
+          },
+        )
+        .toBe(1);
+      const selection = target.locator('#smoke-selection');
+      await selection.scrollIntoViewIfNeeded();
+      await selection.focus();
+
+      if (pageCase.input === 'pointer') {
+        await selectSmokeTextByPointer(
+          target,
+          '#smoke-selection',
+          pageCase.selectionText,
+        );
+      } else {
+        await selectTextByKeyboard(
+          target,
+          '#smoke-selection',
+          pageCase.selectionText,
+        );
+      }
+      expect(await target.evaluate(() => document.activeElement?.id)).toBe(
+        'smoke-selection',
+      );
+      const toolbar = target.getByRole('toolbar', {
+        name: 'Lingo Palette 選取工具',
+      });
+      await expect
+        .poll(() => toolbar.isVisible(), {
+          message: `Expected Reading Flow toolbar for smoke case ${pageCase.id}.`,
+        })
+        .toBe(true);
+      const host = target.locator('[data-lingo-palette-reading-flow]');
+      const accessibleMedia = await toolbar.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          animationName: style.animationName,
+          borderTopWidth: style.borderTopWidth,
+        };
+      });
+      expect(accessibleMedia.animationName).toBe('none');
+      expect(Number.parseFloat(accessibleMedia.borderTopWidth)).toBeGreaterThanOrEqual(
+        2,
+      );
+      await expect
+        .poll(() => host.getAttribute('data-selection-stable-at'))
+        .not.toBeNull();
+      const timing = await host.evaluate((element) => ({
+        selectionStableAt: Number(
+          (element as HTMLElement).dataset.selectionStableAt,
+        ),
+        visibleAt: Number((element as HTMLElement).dataset.visibleAt),
+      }));
+      const latency = timing.visibleAt - timing.selectionStableAt;
+      expect(latency).toBeGreaterThanOrEqual(0);
+      expect(latency).toBeLessThanOrEqual(250);
+      await assertSmokeSurfaceInsideViewport(target);
+      pageRuns.push({ pageCase, milliseconds: latency });
+
+      const shortcut = await configuredToolbarShortcut();
+      expect(shortcut).toBe(
+        process.platform === 'darwin' ? 'Command+Shift+L' : 'Ctrl+Shift+Y',
+      );
+      await worker.evaluate(async (activeTabId) => {
+        await chrome.scripting.executeScript({
+          target: { tabId: activeTabId, allFrames: true },
+          func: () =>
+            window.dispatchEvent(
+              new Event('lingo-palette:focus-selection-toolbar'),
+            ),
+        });
+      }, tabId);
+      const quickHint = target.getByRole('button', { name: '快速提示' });
+      await expect
+        .poll(() =>
+          quickHint.evaluate(
+            (button) =>
+              button === (button.getRootNode() as ShadowRoot).activeElement,
+          ),
+        )
+        .toBe(true);
+      const focusPresentation = await quickHint.evaluate((button) => {
+        const style = getComputedStyle(button);
+        return {
+          outlineWidth: style.outlineWidth,
+          borderStyle: style.borderStyle,
+        };
+      });
+      expect(focusPresentation.outlineWidth).not.toBe('0px');
+      expect(focusPresentation.borderStyle).not.toBe('none');
+
+      await page.keyboard.press('Escape');
+      await expect.poll(() => toolbar.count()).toBe(0);
+      expect(await target.evaluate(() => document.activeElement?.id)).toBe(
+        'smoke-selection',
+      );
+      await worker.evaluate(async (activeTabId) => {
+        await chrome.scripting.executeScript({
+          target: { tabId: activeTabId, allFrames: true },
+          func: () =>
+            window.dispatchEvent(
+              new Event('lingo-palette:focus-selection-toolbar'),
+            ),
+        });
+      }, tabId);
+      await expect
+        .poll(() =>
+          quickHint.evaluate(
+            (button) =>
+              button === (button.getRootNode() as ShadowRoot).activeElement,
+          ),
+        )
+        .toBe(true);
+      let focusLeftSurface = false;
+      for (let index = 0; index < 30; index += 1) {
+        await page.keyboard.press('Tab');
+        focusLeftSurface = await host.evaluate(
+          (element) => element.shadowRoot?.activeElement === null,
+        );
+        if (focusLeftSurface) break;
+      }
+      expect(focusLeftSurface).toBe(true);
+      await worker.evaluate((id) => chrome.tabs.setZoom(id, 1), tabId);
+    }
+
+    const grouped = smokeLatencyGroups(
+      pageRuns.map(({ pageCase, milliseconds }) => ({
+        input: pageCase.input,
+        surface: pageCase.surface,
+        milliseconds,
+      })),
+    );
+    expect(grouped).toHaveLength(4);
+    for (const group of grouped) {
+      expect(group.p95Ms).toBeLessThanOrEqual(100);
+      expect(group.maxMs).toBeLessThanOrEqual(250);
+    }
+    await page.emulateMedia({
+      reducedMotion: 'no-preference',
+      forcedColors: 'none',
+    });
+    completedSupportedPageRuns = pageRuns;
+    completedSmokeLatencyGroups = grouped;
+  }, 60_000);
+
+  it('keeps a separately enabled cross-origin embedded document outside Supported Reading Surfaces', async () => {
+    await page.goto(
+      `http://site-01.lingo.test:${serverPort}/excluded-cross-origin`,
+    );
+    await expect
+      .poll(() =>
+        page.frames().some((frame) =>
+          frame.url().endsWith('/cross-origin-child'),
+        ),
+      )
+      .toBe(true);
+    const crossOriginFrame = page
+      .frames()
+      .find((frame) => frame.url().endsWith('/cross-origin-child'));
+    if (crossOriginFrame === undefined) {
+      throw new Error('Expected the cross-origin smoke frame.');
+    }
+
+    await selectTextByKeyboard(
+      crossOriginFrame,
+      '#cross-origin-selection',
+      'postpone',
+    );
+    await crossOriginFrame.waitForTimeout(150);
+
+    expect(
+      await crossOriginFrame
+        .getByRole('toolbar', { name: 'Lingo Palette 選取工具' })
+        .count(),
+    ).toBe(0);
+    observedExcludedSurfaces.set(
+      'cross-origin-embedded',
+      'A separately enabled cross-origin child never received Reading Flow controls.',
+    );
+  });
+
+  it('keeps form and editor selections outside Supported Reading Surfaces', async () => {
+    await page.goto(`http://site-03.lingo.test:${serverPort}/excluded-editor`);
+    await selectNodeContents(page, '#editable-copy');
+    await page.waitForTimeout(150);
+
+    expect(
+      await page
+        .getByRole('toolbar', { name: 'Lingo Palette 選取工具' })
+        .count(),
+    ).toBe(0);
+    observedExcludedSurfaces.set(
+      'form-or-editor',
+      'Form and contenteditable Selections never produced Reading Flow controls.',
+    );
+  });
+
+  it('reports browser, extension, PDF, local-file, and pixel-only pages as unsupported', async () => {
+    const localFile = join(profilePath, 'excluded-local.html');
+    await writeFile(
+      localFile,
+      '<!doctype html><html><body><p>Local file text is excluded.</p></body></html>',
+    );
+    const excludedPages = [
+      { kind: 'browser-page', url: 'chrome://version/' },
+      {
+        kind: 'extension-page',
+        url: `${extensionOriginFrom(worker)}/options.html`,
+      },
+      {
+        kind: 'pdf-viewer',
+        url: `http://site-04.lingo.test:${serverPort}/excluded.pdf`,
+      },
+      { kind: 'local-file', url: pathToFileURL(localFile).href },
+      {
+        kind: 'canvas-or-image-text',
+        url: `http://site-04.lingo.test:${serverPort}/excluded-canvas`,
+      },
+    ] as const;
+
+    for (const excludedPage of excludedPages) {
+      await page.goto(excludedPage.url);
+      if (excludedPage.kind === 'canvas-or-image-text') {
+        const canvas = page.locator('canvas');
+        const bounds = await canvas.boundingBox();
+        if (bounds === null) throw new Error('Expected the smoke canvas.');
+        await page.mouse.move(bounds.x + 4, bounds.y + 4);
+        await page.mouse.down();
+        await page.mouse.move(
+          bounds.x + bounds.width - 4,
+          bounds.y + bounds.height - 4,
+        );
+        await page.mouse.up();
+      }
+      await page.waitForTimeout(100);
+      expect(
+        await page.locator('[data-lingo-palette-reading-flow]').count(),
+        excludedPage.kind,
+      ).toBe(0);
+      observedExcludedSurfaces.set(
+        excludedPage.kind,
+        `${excludedPage.kind} completed without Reading Flow controls.`,
+      );
+    }
+  });
+
+  it('writes evidence only for smoke observations completed by this run', async () => {
+    expect(completedSupportedPageRuns).toHaveLength(20);
+    expect(completedSmokeLatencyGroups).toHaveLength(4);
+    expect(observedSmokeFlows.size).toBe(SMOKE_FLOW_NAMES.length);
+    expect(observedAnnouncementStates.size).toBe(
+      SMOKE_ANNOUNCEMENT_STATES.length,
+    );
+    expect(observedExcludedSurfaces.size).toBe(
+      SMOKE_EXCLUDED_SURFACE_KINDS.length,
+    );
+    await writeSupportedPageSmokeArtifacts(
+      completedSupportedPageRuns,
+      completedSmokeLatencyGroups,
+    );
+  });
 });
 function extensionOriginFrom(extensionWorker: Worker): string {
   const url = new URL(extensionWorker.url());
@@ -3899,10 +4355,24 @@ async function selectTextByPointer(
   );
   await pageTarget.mouse.move(points.start.x, points.start.y);
   await pageTarget.mouse.down();
+
   await pageTarget.mouse.move(points.end.x, points.end.y, { steps: 8 });
   const selectionAt = await pageTarget.evaluate(() => performance.now());
   await pageTarget.mouse.up();
   return selectionAt;
+}
+async function activateByKeyboard(control: Locator): Promise<void> {
+  await control.focus();
+  const focusPresentation = await control.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      focused: element.matches(':focus'),
+      outlineWidth: Number.parseFloat(style.outlineWidth),
+    };
+  });
+  expect(focusPresentation.focused).toBe(true);
+  expect(focusPresentation.outlineWidth).toBeGreaterThanOrEqual(2);
+  await control.press('Enter');
 }
 
 async function selectTextByKeyboard(
@@ -3938,4 +4408,445 @@ async function selectNodeContents(pageTarget: Page, selector: string): Promise<v
     selection?.addRange(range);
     element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
   });
+}
+
+function smokeMatchPatterns(): string[] {
+  return [
+    ...new Set(
+      SUPPORTED_PAGE_SMOKE_PLAN.map(
+        (pageCase) => `http://${pageCase.domain}/*`,
+      ),
+    ),
+  ];
+}
+
+function smokePageUrl(pageCase: SupportedPageSmokeCase): string {
+  return `http://${pageCase.domain}:${serverPort}${pageCase.path}`;
+}
+
+function renderSmokeFixture(
+  requestUrl: string | undefined,
+  requestHost: string | undefined,
+): string | null {
+  const url = new URL(requestUrl ?? '/', `http://${requestHost ?? 'localhost'}`);
+  if (
+    url.hostname === 'site-01.lingo.test' &&
+    url.pathname === '/excluded-cross-origin'
+  ) {
+    return `<!doctype html><html><body>
+      <iframe title="Cross-origin excluded surface" src="http://site-02.lingo.test:${serverPort}/cross-origin-child"></iframe>
+    </body></html>`;
+  }
+  if (
+    url.hostname === 'site-02.lingo.test' &&
+    url.pathname === '/cross-origin-child'
+  ) {
+    return `<!doctype html><html><body>
+      <p id="cross-origin-selection" tabindex="0">They agreed to postpone the vote.</p>
+    </body></html>`;
+  }
+  if (
+    url.hostname === 'site-03.lingo.test' &&
+    url.pathname === '/excluded-editor'
+  ) {
+    return `<!doctype html><html><body>
+      <label>Draft <textarea>The editor will postpone publication.</textarea></label>
+      <p id="editable-copy" contenteditable="true">The editor will postpone publication.</p>
+    </body></html>`;
+  }
+  if (
+    url.hostname === 'site-04.lingo.test' &&
+    url.pathname === '/excluded-canvas'
+  ) {
+    return `<!doctype html><html><body>
+      <canvas width="640" height="240" aria-label="Words baked into pixels"></canvas>
+      <img alt="Text visible only inside an image" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+    </body></html>`;
+  }
+  const pageCase = SUPPORTED_PAGE_SMOKE_PLAN.find(
+    (candidate) =>
+      candidate.domain === url.hostname && candidate.path === url.pathname,
+  );
+  if (pageCase !== undefined) {
+    if (pageCase.surface === 'same-origin-embedded') {
+      return `<!doctype html><html><head><title>${pageCase.id}</title></head><body>
+        <main>
+          <button id="smoke-reading-position">Reading position</button>
+          <iframe title="Same-origin reading surface" src="/smoke-frame/${pageCase.id}" style="width: 900px; height: 560px"></iframe>
+        </main>
+      </body></html>`;
+    }
+    return renderSmokeSelectionDocument(pageCase);
+  }
+
+  const frameId = url.pathname.startsWith('/smoke-frame/')
+    ? decodeURIComponent(url.pathname.slice('/smoke-frame/'.length))
+    : null;
+  if (frameId === null) return null;
+  const frameCase = SUPPORTED_PAGE_SMOKE_PLAN.find(
+    (candidate) =>
+      candidate.domain === url.hostname && candidate.id === frameId,
+  );
+  return frameCase === undefined
+    ? null
+    : renderSmokeSelectionDocument(frameCase);
+}
+
+function renderSmokeSelectionDocument(
+  pageCase: SupportedPageSmokeCase,
+): string {
+  const placementClass =
+    pageCase.placement === 'after-scroll' ? 'after-scroll' : 'viewport-edge';
+  return `<!doctype html><html><head><title>${pageCase.id}</title>
+    <style>
+      html, body { margin: 0; min-height: 100%; font: 18px/1.6 system-ui, sans-serif; }
+      main { box-sizing: border-box; display: flex; flex-direction: column; min-height: 100vh; padding: 24px; }
+      #smoke-selection { max-width: 680px; padding: 8px; }
+      #smoke-selection.viewport-edge { align-self: flex-end; margin-top: auto; text-align: right; }
+      #smoke-selection.after-scroll { margin-top: 1400px; }
+    </style></head><body><main>
+      <button id="smoke-reading-position">Reading position</button>
+      <p id="smoke-selection" class="${placementClass}" tabindex="0">${escapeHtml(pageCase.paragraph)}</p>
+    </main></body></html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+async function smokeSelectionTarget(
+  pageCase: SupportedPageSmokeCase,
+): Promise<Page | Frame> {
+  if (pageCase.surface === 'top-level') return page;
+  await expect
+    .poll(() =>
+      page.frames().some((frame) =>
+        frame.url().endsWith(`/smoke-frame/${pageCase.id}`),
+      ),
+    )
+    .toBe(true);
+  const frame = page
+    .frames()
+    .find((candidate) =>
+      candidate.url().endsWith(`/smoke-frame/${pageCase.id}`),
+    );
+  if (frame === undefined) throw new Error(`Missing frame for ${pageCase.id}.`);
+  return frame;
+}
+
+async function selectSmokeTextByPointer(
+  target: Page | Frame,
+  selector: string,
+  text: string,
+): Promise<number> {
+  const points = await target.locator(selector).evaluate(
+    (element, selectedText) => {
+      const node = element.firstChild;
+      if (!(node instanceof Text)) throw new Error('Expected a text node.');
+      const start = node.data.indexOf(selectedText);
+      if (start < 0) throw new Error(`Could not select ${selectedText}.`);
+      const range = element.ownerDocument.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + selectedText.length);
+      const rect = range.getBoundingClientRect();
+      return {
+        start: { x: rect.left + 1, y: rect.top + rect.height / 2 },
+        end: { x: rect.right - 1, y: rect.top + rect.height / 2 },
+      };
+    },
+    text,
+  );
+  let offset = { x: 0, y: 0 };
+  if ('frameElement' in target) {
+    const frameElement = await target.frameElement();
+    const box = await frameElement.boundingBox();
+    if (box === null) throw new Error('Expected a visible same-origin frame.');
+    offset = { x: box.x, y: box.y };
+  }
+  await page.mouse.move(points.start.x + offset.x, points.start.y + offset.y);
+  await page.mouse.down();
+  await page.mouse.move(points.end.x + offset.x, points.end.y + offset.y, {
+    steps: 8,
+  });
+  const selectionAt = await target.evaluate(() => performance.now());
+  await page.mouse.up();
+  return selectionAt;
+}
+
+async function assertSmokeSurfaceInsideViewport(
+  target: Page | Frame,
+): Promise<void> {
+  const bounds = await target
+    .locator('[data-lingo-palette-reading-flow]')
+    .evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+      };
+    });
+  const viewport = await target.evaluate(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
+  expect(bounds.left).toBeGreaterThanOrEqual(0);
+  expect(bounds.top).toBeGreaterThanOrEqual(0);
+  expect(bounds.right).toBeLessThanOrEqual(viewport.width);
+  expect(bounds.bottom).toBeLessThanOrEqual(viewport.height);
+}
+
+async function configuredToolbarShortcut(): Promise<string | undefined> {
+  return worker.evaluate(async () => {
+    const commands = await chrome.commands.getAll();
+    return commands.find(({ name }) => name === 'focus-selection-toolbar')
+      ?.shortcut;
+  });
+}
+
+type SmokeLatencyGroup = {
+  input: SupportedPageSmokeCase['input'];
+  surface: SupportedPageSmokeCase['surface'];
+  p95Ms: number;
+  maxMs: number;
+};
+
+function smokeLatencyGroups(
+  samples: ReadonlyArray<{
+    input: SupportedPageSmokeCase['input'];
+    surface: SupportedPageSmokeCase['surface'];
+    milliseconds: number;
+  }>,
+): SmokeLatencyGroup[] {
+  const groups = new Map<string, number[]>();
+  for (const sample of samples) {
+    const key = `${sample.input}\u0000${sample.surface}`;
+    const values = groups.get(key);
+    if (values === undefined) groups.set(key, [sample.milliseconds]);
+    else values.push(sample.milliseconds);
+  }
+  return [...groups].map(([key, values]) => {
+    const [input, surface] = key.split('\u0000') as [
+      SupportedPageSmokeCase['input'],
+      SupportedPageSmokeCase['surface'],
+    ];
+    const { p95Ms, maxMs } = summarizeSmokeLatencyValues(values);
+    return { input, surface, p95Ms, maxMs };
+  });
+}
+
+async function writeSupportedPageSmokeArtifacts(
+  pageRuns: ReadonlyArray<{
+    pageCase: SupportedPageSmokeCase;
+    milliseconds: number;
+  }>,
+  groups: readonly SmokeLatencyGroup[],
+): Promise<void> {
+  const artifactDirectory = process.env.SMOKE_EVIDENCE_DIR;
+  const requestedScreenshot = process.env.SMOKE_SCREENSHOT_PATH;
+  if (artifactDirectory === undefined && requestedScreenshot === undefined) {
+    return;
+  }
+
+  const platform =
+    process.platform === 'win32'
+      ? 'windows'
+      : process.platform === 'darwin'
+        ? 'macos'
+        : process.platform;
+  const browserVersion = await page.evaluate(() => navigator.userAgent);
+  const recordedAt = new Date().toISOString();
+  const environmentId = `${platform}-chrome-automated`;
+  const extensionCommit =
+    process.env.GITHUB_SHA ??
+    (await executeFile('git', ['rev-parse', 'HEAD'])).stdout.trim();
+  const fullMatrix = process.env.SMOKE_FULL_MATRIX === 'true';
+  const evidence = {
+    schemaVersion: 1,
+    runId: `supported-page-smoke-${platform}-${recordedAt}`,
+    recordedAt,
+    environments: [
+      {
+        id: environmentId,
+        os: platform,
+        osVersion: release(),
+        browserVersion,
+        extensionCommit,
+      },
+    ],
+    plan: SUPPORTED_PAGE_SMOKE_PLAN.map(
+      ({ selectionText: _selectionText, paragraph: _paragraph, ...pageCase }) =>
+        pageCase,
+    ),
+    pageRuns: pageRuns.map(({ pageCase, milliseconds }) => ({
+      caseId: pageCase.id,
+      environmentId,
+      permissionState: 'enabled',
+      expected:
+        'Anchored controls remain visible, preserve Selection focus, restore it on Escape, and remain non-modal.',
+      observed:
+        'Automated browser smoke passed viewport, Selection-focus, Escape, tab-exit, and animation-frame latency checks.',
+      outcome: 'passed',
+      accessibilityMethods: ['keyboard-only', 'visual-focus', 'automated'],
+      defectLinks: [],
+      latencyMs: Number(milliseconds.toFixed(3)),
+      focus: {
+        pointerSelectionPreserved: true,
+        escapeRestored: true,
+        nonModalNoTrap: true,
+      },
+    })),
+    excludedSurfaceRuns: fullMatrix
+      ? Array.from(
+          observedExcludedSurfaces,
+          ([surfaceKind, observed]) => ({
+            environmentId,
+            surfaceKind,
+            permissionState: 'excluded',
+            expected: 'No Reading Flow controls are injected.',
+            observed,
+            outcome: 'unsupported',
+            accessibilityMethods: ['automated'],
+            defectLinks: [],
+          }),
+        )
+      : [],
+    flowRuns: fullMatrix
+      ? Array.from(observedSmokeFlows, ([flow, observed]) => ({
+          environmentId,
+          flow,
+          keyboardOnly: true,
+          visibleFocus: true,
+          nonColorCue: true,
+          expected: 'The extension-owned flow is operable without a pointer.',
+          observed,
+          defectLinks: [],
+        }))
+      : [],
+    announcementRuns: fullMatrix
+      ? Array.from(observedAnnouncementStates, ([state, observed]) => ({
+          environmentId,
+          state,
+          announced: true,
+          focusMoved: false,
+          expected: 'The state is announced without unnecessary focus movement.',
+          observed,
+          defectLinks: [],
+        }))
+      : [],
+    accessibilityRuns: [
+      {
+        environmentId,
+        reducedMotion: true,
+        highContrast: true,
+        assistiveTechnology: platform === 'windows' ? 'nvda' : 'voiceover',
+        manualScreenReader: false,
+        configuredCommandEntered: false,
+        expected: `Complete core flow passes the actual configured browser command and manual ${platform === 'windows' ? 'NVDA' : 'VoiceOver'} smoke.`,
+        observed:
+          'Automated reduced-motion, forced-colors, manifest-shortcut, and command-handler checks passed; the actual browser shortcut and manual screen reader are not inferred.',
+        defectLinks: [],
+      },
+    ],
+  };
+
+  const screenshotPaths: string[] = [];
+  if (artifactDirectory !== undefined) {
+    await mkdir(artifactDirectory, { recursive: true });
+    await writeFile(
+      join(artifactDirectory, `supported-pages-${platform}.json`),
+      `${JSON.stringify(evidence, null, 2)}\n`,
+    );
+    screenshotPaths.push(
+      join(artifactDirectory, `supported-pages-${platform}.png`),
+    );
+  }
+  if (requestedScreenshot !== undefined) {
+    screenshotPaths.push(resolve(requestedScreenshot));
+  }
+  if (screenshotPaths.length === 0) return;
+
+  const rows = pageRuns
+    .map(
+      ({ pageCase, milliseconds }) => `<tr>
+        <td>${escapeHtml(pageCase.id)}</td>
+        <td>${escapeHtml(pageCase.domain)}</td>
+        <td>${escapeHtml(pageCase.surface)}</td>
+        <td>${escapeHtml(pageCase.selectionKind)} / ${escapeHtml(pageCase.input)}</td>
+        <td>${pageCase.placement} / ${pageCase.zoomPercent}%</td>
+        <td>${milliseconds.toFixed(2)} ms</td>
+        <td><strong>PASS</strong></td>
+      </tr>`,
+    )
+    .join('');
+  const groupCards = groups
+    .map(
+      (group) => `<article>
+        <strong>${escapeHtml(group.input)} / ${escapeHtml(group.surface)}</strong>
+        <span>p95 ${group.p95Ms.toFixed(2)} ms</span>
+        <span>max ${group.maxMs.toFixed(2)} ms</span>
+      </article>`,
+    )
+    .join('');
+  await page.setContent(`<!doctype html><html><head><title>Issue 17 smoke evidence</title>
+    <style>
+      :root { color-scheme: light; font: 15px/1.45 system-ui, sans-serif; }
+      body { margin: 0; padding: 32px; color: #162033; background: #eef3f8; }
+      header, section { max-width: 1180px; margin: 0 auto 24px; }
+      h1 { margin: 0 0 8px; font-size: 30px; }
+      .lede { margin: 0; color: #44516a; }
+      .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+      article { display: grid; gap: 6px; padding: 16px; border: 1px solid #a9b7c9; border-radius: 8px; background: white; }
+      table { width: 100%; border-collapse: collapse; background: white; }
+      th, td { padding: 9px 10px; border: 1px solid #c4cedb; text-align: left; }
+      th { background: #dce7f3; }
+      td:last-child { color: #075d34; }
+      footer { max-width: 1180px; margin: 16px auto 0; color: #44516a; }
+    </style></head><body>
+      <header>
+        <h1>Issue 17 — automated Supported Reading Surface smoke</h1>
+        <p class="lede">${pageRuns.length} pages · 10 domains · ${escapeHtml(platform)} · ${escapeHtml(recordedAt)}</p>
+      </header>
+      <section class="summary">${groupCards}</section>
+      <section><table>
+        <thead><tr><th>Case</th><th>Domain</th><th>Surface</th><th>Selection / input</th><th>Placement / zoom</th><th>Local latency</th><th>Result</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></section>
+      <footer>Provider latency is excluded. The actual browser shortcut and manual NVDA/VoiceOver evidence are never inferred from this automated report.</footer>
+    </body></html>`);
+  for (const screenshotPath of screenshotPaths) {
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+  }
+}
+
+function minimalPdf(): Buffer {
+  const stream = 'BT /F1 12 Tf 72 72 Td (Excluded PDF surface) Tj ET';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let source = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(source));
+    source += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(source);
+  source += `xref\n0 ${objects.length + 1}\n`;
+  source += '0000000000 65535 f \n';
+  for (const offset of offsets.slice(1)) {
+    source += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  }
+  source += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n`;
+  source += `startxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(source, 'ascii');
 }

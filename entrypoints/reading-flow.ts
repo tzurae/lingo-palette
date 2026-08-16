@@ -28,11 +28,24 @@ const focusEvent = 'lingo-palette:focus-selection-toolbar';
 const viewportGap = 8;
 
 export default defineUnlistedScript(() => {
+  if (!isSupportedReadingDocument(window)) return;
   if (!document.documentElement.hasAttribute(initializedAttribute)) {
     document.documentElement.setAttribute(initializedAttribute, '');
     startReadingFlow();
   }
 });
+
+function isSupportedReadingDocument(currentWindow: Window): boolean {
+  if (currentWindow.top === currentWindow) return true;
+  try {
+    return (
+      currentWindow.top !== null &&
+      currentWindow.top.location.origin === currentWindow.location.origin
+    );
+  } catch {
+    return false;
+  }
+}
 
 function startReadingFlow(): void {
   let snapshot: SelectionSnapshot | null = null;
@@ -40,6 +53,7 @@ function startReadingFlow(): void {
   let host: HTMLElement | null = null;
   let shadow: ShadowRoot | null = null;
   let enabled = false;
+  let visibilityMeasurementVersion = 0;
   let quickHintRequestVersion = 0;
   let quickHintBusy = false;
   const pronunciationPlayback = createBrowserPronunciationPlayback();
@@ -53,12 +67,13 @@ function startReadingFlow(): void {
     .sendMessage({ type: 'site-status', origin: location.origin })
     .then((response: EnableSiteResponse) => {
       enabled = response.enabled;
-      showForCurrentSelection(false);
+      showForCurrentSelection(false, performance.now());
     });
 
   document.addEventListener('pointerup', (event) => {
     if (host !== null && event.composedPath().includes(host)) return;
-    queueMicrotask(() => showForCurrentSelection(false));
+    const selectionStableAt = performance.now();
+    queueMicrotask(() => showForCurrentSelection(false, selectionStableAt));
   });
   document.addEventListener('keyup', (event) => {
     if (
@@ -67,11 +82,12 @@ function startReadingFlow(): void {
     ) {
       return;
     }
-    queueMicrotask(() => showForCurrentSelection(false));
+    const selectionStableAt = performance.now();
+    queueMicrotask(() => showForCurrentSelection(false, selectionStableAt));
   });
   window.addEventListener(focusEvent, () => {
     if (document.activeElement instanceof HTMLIFrameElement) return;
-    showForCurrentSelection(true);
+    showForCurrentSelection(true, performance.now());
   });
   browser.runtime.onMessage.addListener((message: unknown) => {
     if (
@@ -105,7 +121,10 @@ function startReadingFlow(): void {
     closeSurface(true);
   });
 
-  function showForCurrentSelection(focusControls: boolean): void {
+  function showForCurrentSelection(
+    focusControls: boolean,
+    selectionStableAt: number,
+  ): void {
     const nextSnapshot = captureSelection(document, document.getSelection());
     if (nextSnapshot === null) {
       if (focusControls) setStatus('請先選取要理解的英文內容。');
@@ -120,9 +139,26 @@ function startReadingFlow(): void {
     ensureSurface();
     renderControls();
     placeSurface();
+    recordVisibleControlsFrame(selectionStableAt);
     if (focusControls) {
       firstInteractiveElement()?.focus({ preventScroll: true });
     }
+  }
+
+  function recordVisibleControlsFrame(selectionStableAt: number): void {
+    const measuredHost = host;
+    if (measuredHost === null) return;
+    const measurementVersion = ++visibilityMeasurementVersion;
+    requestAnimationFrame((visibleAt) => {
+      if (
+        host !== measuredHost ||
+        measurementVersion !== visibilityMeasurementVersion
+      ) {
+        return;
+      }
+      measuredHost.dataset.selectionStableAt = String(selectionStableAt);
+      measuredHost.dataset.visibleAt = String(visibleAt);
+    });
   }
 
   function ensureSurface(): void {
@@ -145,7 +181,6 @@ function startReadingFlow(): void {
     section.replaceChildren();
     section.setAttribute('role', 'toolbar');
     section.setAttribute('aria-label', 'Lingo Palette 選取工具');
-    if (host !== null) host.dataset.visibleAt = String(performance.now());
 
     const header = createElement('div', 'header');
     header.append(
