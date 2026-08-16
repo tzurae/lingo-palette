@@ -27,19 +27,27 @@ export const CUSTOM_REASONING_EFFORTS = [
 ] as const;
 
 const reasoningEffortSchema = z.enum(CUSTOM_REASONING_EFFORTS);
-const effortsSchema = z.object({
-  quickHint: reasoningEffortSchema,
-  deepDive: reasoningEffortSchema,
-  review: reasoningEffortSchema,
-});
-const configurationSchema = z.object({
-  model: z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('curated'), id: z.enum(CURATED_OPENAI_MODELS) }),
-    z.object({ kind: z.literal('custom'), id: z.string().min(1) }),
-  ]),
-  efforts: effortsSchema,
-  personalInstructions: z.string(),
-});
+const effortsSchema = z
+  .object({
+    quickHint: reasoningEffortSchema,
+    deepDive: reasoningEffortSchema,
+    review: reasoningEffortSchema,
+  })
+  .strict();
+const configurationSchema = z
+  .object({
+    model: z.discriminatedUnion('kind', [
+      z
+        .object({ kind: z.literal('curated'), id: z.enum(CURATED_OPENAI_MODELS) })
+        .strict(),
+      z
+        .object({ kind: z.literal('custom'), id: z.string().min(1) })
+        .strict(),
+    ]),
+    efforts: effortsSchema,
+    personalInstructions: z.string(),
+  })
+  .strict();
 
 export type ReasoningEffort = z.infer<typeof reasoningEffortSchema>;
 export type OpenAiConfiguration = z.infer<typeof configurationSchema>;

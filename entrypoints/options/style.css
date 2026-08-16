@@ -109,6 +109,65 @@ textarea {
   margin-top: 0;
 }
 
+.backup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.file-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 1px 6px;
+  border: 1px solid ButtonBorder;
+  border-radius: 2px;
+  background: ButtonFace;
+  color: ButtonText;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.file-button:has(+ #import-portable-backup-file:focus-visible) {
+  outline: 2px solid Highlight;
+  outline-offset: 2px;
+}
+
+#import-portable-backup-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 1px;
+  padding: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.import-collision,
+.import-report {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+}
+
+.comparison {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.comparison pre {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  background: #e2e8f0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .warning,
 .error {
   color: #991b1b;

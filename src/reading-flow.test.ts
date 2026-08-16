@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -33,6 +34,13 @@ import {
   REVIEW_SCHEDULES_STORAGE_KEY,
   REVIEW_SESSIONS_STORAGE_KEY,
 } from './modules/review/review-storage-keys';
+import { LEARNER_NOTES_STORAGE_KEY } from './modules/learning/learner-note';
+import {
+  IMPORT_REPORTS_STORAGE_KEY,
+  IMPORT_STAGING_STORAGE_KEY,
+  PORTABLE_PREFERENCES_STORAGE_KEY,
+  PORTABLE_RECORD_PROVENANCE_STORAGE_KEY,
+} from './modules/portability/portable-backup';
 
 declare const chrome: typeof browser;
 
@@ -3582,6 +3590,239 @@ describe('unpacked extension Reading Flow', () => {
       }),
     ).toBe(4);
     await sidePanel.close();
+  }, 60_000);
+
+  it('exports and transactionally restores portable state from Settings while offline without replacing device credentials', async () => {
+    await worker.evaluate(
+      async ([lookupKey, resetKeys]) => {
+        await chrome.storage.local.remove([lookupKey, ...resetKeys]);
+        await chrome.storage.local.set({
+          [lookupKey]: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                id: 'portable-workflow-lookup',
+                selection: {
+                  text: 'portable',
+                  context: {
+                    before: 'This lookup must ',
+                    after: ' survive a fresh-profile import.',
+                  },
+                },
+                action: {
+                  type: 'quick-hint',
+                  result: {
+                    simplerExpression: 'movable between profiles',
+                    explanationCue: '可攜式',
+                  },
+                },
+                completedAt: '2026-08-16T05:00:00.000Z',
+                usage: { source: 'cache', attempts: 0, provider: null },
+              },
+            ],
+          },
+        });
+      },
+      [
+        LOOKUP_RECORDS_STORAGE_KEY,
+        [
+          LEARNING_STATE_STORAGE_KEY,
+          LEARNER_NOTES_STORAGE_KEY,
+          APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+          REVIEW_EVIDENCE_STORAGE_KEY,
+          REVIEW_SCHEDULES_STORAGE_KEY,
+          REVIEW_SESSIONS_STORAGE_KEY,
+          PORTABLE_RECORD_PROVENANCE_STORAGE_KEY,
+          IMPORT_REPORTS_STORAGE_KEY,
+          IMPORT_STAGING_STORAGE_KEY,
+        ],
+      ] as const,
+    );
+    const options = await context.newPage();
+    await options.addInitScript(() => {
+      Object.defineProperty(window, 'showSaveFilePicker', {
+        configurable: true,
+        value: async () => ({
+          createWritable: async () => ({
+            write: async (blob: Blob) => {
+              (
+                window as unknown as { capturedPortableBackup?: string }
+              ).capturedPortableBackup = await blob.text();
+            },
+            close: async () => undefined,
+          }),
+        }),
+      });
+    });
+    await options.goto(`${extensionOriginFrom(worker)}/options.html`);
+    const importFile = options.locator('#import-portable-backup-file');
+    await importFile.focus();
+    expect(
+      await options
+        .locator('label[for="import-portable-backup-file"]')
+        .evaluate((element) => getComputedStyle(element).outlineWidth),
+    ).toBe('2px');
+    await options
+      .getByRole('button', { name: '選擇位置並匯出備份' })
+      .click();
+    await expect
+      .poll(() =>
+        options.evaluate(
+          () =>
+            (
+              window as unknown as { capturedPortableBackup?: string }
+            ).capturedPortableBackup?.length ?? 0,
+        ),
+      )
+      .toBeGreaterThan(0);
+    const backupText = await options.evaluate(
+      () =>
+        (
+          window as unknown as { capturedPortableBackup?: string }
+        ).capturedPortableBackup ?? '',
+    );
+    const backupDocument = JSON.parse(backupText) as {
+      state: {
+        lookupRecords: { records: unknown[] };
+        learning: { learningItems: unknown[] };
+        settings: {
+          openAi: { model: { id: string } };
+        };
+      };
+    };
+    const deviceState = await worker.evaluate(
+      async ([apiKey, evidencePack]) => {
+        const stored = await chrome.storage.local.get([apiKey, evidencePack]);
+        return {
+          apiKey: stored[apiKey],
+          activeVersion: (
+            stored[evidencePack] as { activeVersion?: string } | undefined
+          )?.activeVersion,
+        };
+      },
+      [OPENAI_API_KEY_STORAGE_KEY, EVIDENCE_PACK_STATE_STORAGE_KEY] as const,
+    );
+    await worker.evaluate(
+      async (keys) => {
+        await chrome.storage.local.remove(keys);
+      },
+      [
+        LOOKUP_RECORDS_STORAGE_KEY,
+        LEARNING_STATE_STORAGE_KEY,
+        LEARNER_NOTES_STORAGE_KEY,
+        APPROVED_REVIEW_ITEMS_STORAGE_KEY,
+        REVIEW_EVIDENCE_STORAGE_KEY,
+        REVIEW_SCHEDULES_STORAGE_KEY,
+        REVIEW_SESSIONS_STORAGE_KEY,
+        OPENAI_CONFIGURATION_STORAGE_KEY,
+        OPENAI_BUDGET_SETTINGS_STORAGE_KEY,
+        PORTABLE_PREFERENCES_STORAGE_KEY,
+        PORTABLE_RECORD_PROVENANCE_STORAGE_KEY,
+        IMPORT_REPORTS_STORAGE_KEY,
+        IMPORT_STAGING_STORAGE_KEY,
+        REVIEW_PREPARATION_JOBS_STORAGE_KEY,
+      ],
+    );
+
+    await context.setOffline(true);
+    try {
+      await options
+        .locator('#import-portable-backup-file')
+        .setInputFiles({
+          name: 'invalid-utf8.json',
+          mimeType: 'application/json',
+          buffer: Buffer.from([0xff]),
+        });
+      await expect
+        .poll(() => options.locator('#portable-backup-status').textContent())
+        .toBe('備份不是有效的 UTF-8。');
+      await options
+        .locator('#import-portable-backup-file')
+        .setInputFiles({
+          name: 'lingo-palette-backup.json',
+          mimeType: 'application/json',
+          buffer: Buffer.from(backupText, 'utf8'),
+        });
+      await expect
+        .poll(() => options.locator('#portable-backup-status').textContent())
+        .toBe(
+          '備份已在 staging 完成完整驗證與 migration；目前 learner state 尚未變更。',
+        );
+      await expect
+        .poll(() =>
+          options
+            .getByRole('heading', { name: '提交前 Import Report' })
+            .isVisible(),
+        )
+        .toBe(true);
+      await options.screenshot({
+        path: resolve('docs/assets/issue-16-import-preview.png'),
+        fullPage: true,
+      });
+      await options
+        .getByRole('button', { name: '確認原子提交' })
+        .click();
+      await expect
+        .poll(() =>
+          options
+            .getByRole('heading', { name: /^Import Report / })
+            .count(),
+        )
+        .toBeGreaterThan(0);
+      await options.screenshot({
+        path: resolve('docs/assets/issue-16-import-report.png'),
+        fullPage: true,
+      });
+    } finally {
+      await context.setOffline(false);
+    }
+
+    const restored = await worker.evaluate(
+      async ([lookupKey, learningKey, configurationKey, apiKey, evidencePack]) => {
+        const stored = await chrome.storage.local.get([
+          lookupKey,
+          learningKey,
+          configurationKey,
+          apiKey,
+          evidencePack,
+        ]);
+        return {
+          lookupCount: (
+            stored[lookupKey] as { records?: unknown[] } | undefined
+          )?.records?.length,
+          learningItemCount: (
+            stored[learningKey] as
+              | { learningItems?: unknown[] }
+              | undefined
+          )?.learningItems?.length,
+          modelId: (
+            stored[configurationKey] as
+              | { model?: { id?: string } }
+              | undefined
+          )?.model?.id,
+          apiKey: stored[apiKey],
+          activeVersion: (
+            stored[evidencePack] as { activeVersion?: string } | undefined
+          )?.activeVersion,
+        };
+      },
+      [
+        LOOKUP_RECORDS_STORAGE_KEY,
+        LEARNING_STATE_STORAGE_KEY,
+        OPENAI_CONFIGURATION_STORAGE_KEY,
+        OPENAI_API_KEY_STORAGE_KEY,
+        EVIDENCE_PACK_STATE_STORAGE_KEY,
+      ] as const,
+    );
+    expect(restored).toEqual({
+      lookupCount: backupDocument.state.lookupRecords.records.length,
+      learningItemCount: backupDocument.state.learning.learningItems.length,
+      modelId: backupDocument.state.settings.openAi.model.id,
+      apiKey: deviceState.apiKey,
+      activeVersion: deviceState.activeVersion,
+    });
+    await options.close();
   }, 60_000);
 });
 function extensionOriginFrom(extensionWorker: Worker): string {

@@ -120,18 +120,7 @@ export function createLookupRecordStore(
     const stored = await storage.get(LOOKUP_RECORDS_STORAGE_KEY);
     const raw = stored[LOOKUP_RECORDS_STORAGE_KEY];
     if (raw === undefined) return [];
-    const parsed = storedRecordsSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new Error('Stored Lookup Records are invalid; existing data was not changed.');
-    }
-    try {
-      return parsed.data.records.map(parseLookupRecord);
-    } catch (error) {
-      throw new Error(
-        'Stored Lookup Records contain an invalid Action result; existing data was not changed.',
-        { cause: error },
-      );
-    }
+    return parseLookupRecordsState(raw).records;
   };
 
   return {
@@ -167,6 +156,27 @@ export function createLookupRecordStore(
       return serialized(loadUnsafe);
     },
   };
+}
+
+export function parseLookupRecordsState(value: unknown): {
+  version: 1;
+  records: LookupRecord[];
+} {
+  const parsed = storedRecordsSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error('Stored Lookup Records are invalid; existing data was not changed.');
+  }
+  try {
+    return {
+      version: 1,
+      records: parsed.data.records.map(parseLookupRecord),
+    };
+  } catch (error) {
+    throw new Error(
+      'Stored Lookup Records contain an invalid Action result; existing data was not changed.',
+      { cause: error },
+    );
+  }
 }
 
 export function sanitizeSourceUrl(value: string | undefined): string | undefined {

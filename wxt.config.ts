@@ -10,6 +10,7 @@ export default defineConfig({
       'activeTab',
       'alarms',
       'commands',
+      'downloads',
       'scripting',
       'sidePanel',
       'storage',

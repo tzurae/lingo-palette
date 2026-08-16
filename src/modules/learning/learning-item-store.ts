@@ -194,6 +194,38 @@ const emptyState = (): LearningState => ({
   history: [],
 });
 
+export function parseLearningStateStorage(value: unknown): {
+  version: 1;
+  learningItems: LearningItem[];
+  encounters: Encounter[];
+  mergeSuggestions: MergeSuggestion[];
+  history: LearningMutation[];
+} {
+  const parsed = storedStateSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error('Stored Learning state is invalid; existing data was not changed.');
+  }
+  return {
+    version: 1,
+    learningItems: parsed.data.learningItems,
+    encounters: parsed.data.encounters.map((encounter) => ({
+      ...encounter,
+      action:
+        encounter.action.type === 'quick-hint'
+          ? {
+              type: 'quick-hint',
+              result: parseQuickHint(encounter.action.result),
+            }
+          : {
+              type: 'deep-dive',
+              result: parseDeepDive(encounter.action.result),
+            },
+    })),
+    mergeSuggestions: parsed.data.mergeSuggestions,
+    history: parsed.data.history,
+  };
+}
+
 export function createLearningItemStore(
   storage: LearningStorage,
   evidence: EligibleSenseLookup,
@@ -239,28 +271,8 @@ export function createLearningItemStore(
     const stored = await storage.get(LEARNING_STATE_STORAGE_KEY);
     const raw = stored[LEARNING_STATE_STORAGE_KEY];
     if (raw === undefined) return emptyState();
-    const parsed = storedStateSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new Error('Stored Learning state is invalid; existing data was not changed.');
-    }
-    return {
-      learningItems: parsed.data.learningItems,
-      encounters: parsed.data.encounters.map((encounter) => ({
-        ...encounter,
-        action:
-          encounter.action.type === 'quick-hint'
-            ? {
-                type: 'quick-hint',
-                result: parseQuickHint(encounter.action.result),
-              }
-            : {
-                type: 'deep-dive',
-                result: parseDeepDive(encounter.action.result),
-              },
-      })),
-      mergeSuggestions: parsed.data.mergeSuggestions,
-      history: parsed.data.history,
-    };
+    const { version: _, ...state } = parseLearningStateStorage(raw);
+    return state;
   };
 
   const save = (state: LearningState): Promise<void> =>

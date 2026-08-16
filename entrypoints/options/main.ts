@@ -31,6 +31,14 @@ import {
   isEnabledSiteScriptId,
   originFromMatchPattern,
 } from '../../src/modules/reading-flow/site-permission';
+import { MAX_PORTABLE_BACKUP_BYTES } from '../../src/modules/portability/portable-backup';
+import {
+  parsePortableBackupResponse,
+  type PortableBackupRequest,
+  type PortableBackupResponse,
+  type PortableImportPreview,
+  type PortableImportReport,
+} from '../../src/modules/portability/messages';
 import './style.css';
 
 const openAiForm = requiredElement<HTMLFormElement>('openai-form');
@@ -110,6 +118,34 @@ let stagedEvidencePackCandidateId: string | null = null;
 let evidencePackRollbackAvailable = false;
 let hasStoredOpenAiApiKey = false;
 
+const exportPortableBackup = requiredElement<HTMLButtonElement>(
+  'export-portable-backup',
+);
+const importPortableBackupFile = requiredElement<HTMLInputElement>(
+  'import-portable-backup-file',
+);
+const portableImportPreview = requiredElement<HTMLDivElement>(
+  'portable-import-preview',
+);
+const portableImportSource = requiredElement<HTMLParagraphElement>(
+  'portable-import-source',
+);
+const portableImportCounts = requiredElement<HTMLUListElement>(
+  'portable-import-counts',
+);
+const portableImportCollisions = requiredElement<HTMLDivElement>(
+  'portable-import-collisions',
+);
+const confirmPortableImport = requiredElement<HTMLButtonElement>(
+  'confirm-portable-import',
+);
+const portableBackupStatus = requiredElement<HTMLParagraphElement>(
+  'portable-backup-status',
+);
+const portableImportReports = requiredElement<HTMLDivElement>(
+  'portable-import-reports',
+);
+let stagedPortableImportId: string | null = null;
 openAiForm.addEventListener('submit', (event) => {
   event.preventDefault();
   void activateOpenAiConfiguration();
@@ -140,6 +176,15 @@ confirmEvidencePack.addEventListener('click', () => {
 rollbackEvidencePackButton.addEventListener('click', () => {
   void rollbackActiveEvidencePack();
 });
+exportPortableBackup.addEventListener('click', () => {
+  void exportBackupToChosenFile();
+});
+importPortableBackupFile.addEventListener('change', () => {
+  void stageChosenBackup();
+});
+confirmPortableImport.addEventListener('click', () => {
+  void commitStagedBackup();
+});
 renderModelOptions();
 renderInstructionCount();
 
@@ -147,6 +192,7 @@ void renderOpenAiSettings();
 void renderEnabledSites();
 void renderCommandBinding();
 void renderEvidencePackStatus();
+void renderImportReports();
 
 function renderModelOptions(): void {
   const descriptions = ['預設', '較低成本'] as const;
@@ -567,6 +613,7 @@ async function rollbackActiveEvidencePack(): Promise<void> {
       evidencePackStatus.textContent = 'Evidence Pack rollback 回應不完整。';
       return;
     }
+
     applyEvidencePackSnapshot(response.snapshot);
     evidencePackDisclosure.hidden = true;
     stagedEvidencePackCandidateId = null;
@@ -579,6 +626,344 @@ async function rollbackActiveEvidencePack(): Promise<void> {
   } finally {
     setEvidencePackBusy(false);
   }
+}
+async function exportBackupToChosenFile(): Promise<void> {
+  setPortableBackupBusy(true);
+  portableBackupStatus.textContent = '';
+  try {
+    const response = await sendPortableBackupMessage({
+      type: 'export-portable-backup',
+    });
+    if (response.status === 'failed') {
+      portableBackupStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'exported') {
+      portableBackupStatus.textContent = 'Portable backup 匯出回應不完整。';
+      return;
+    }
+    await saveTextFile(response.filename, response.text);
+    portableBackupStatus.textContent =
+      `已匯出 ${response.filename}。${response.warning}`;
+  } catch (error) {
+    portableBackupStatus.textContent =
+      error instanceof DOMException && error.name === 'AbortError'
+        ? '已取消匯出，未寫入檔案。'
+        : 'Portable backup 匯出失敗。';
+  } finally {
+    setPortableBackupBusy(false);
+  }
+}
+
+async function saveTextFile(filename: string, text: string): Promise<void> {
+  const picker = (
+    window as unknown as {
+      showSaveFilePicker?: (options: {
+        suggestedName: string;
+        types: Array<{
+          description: string;
+          accept: Record<string, string[]>;
+        }>;
+      }) => Promise<{
+        createWritable(): Promise<{
+          write(data: Blob): Promise<void>;
+          close(): Promise<void>;
+        }>;
+      }>;
+    }
+  ).showSaveFilePicker;
+  const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+  if (picker !== undefined) {
+    const handle = await picker({
+      suggestedName: filename,
+      types: [
+        {
+          description: 'Lingo Palette portable backup',
+          accept: { 'application/json': ['.json'] },
+        },
+      ],
+    });
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    await browser.downloads.download({
+      url,
+      filename,
+      saveAs: true,
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function stageChosenBackup(): Promise<void> {
+  const file = importPortableBackupFile.files?.[0];
+  importPortableBackupFile.value = '';
+  if (file === undefined) return;
+  portableImportPreview.hidden = true;
+  stagedPortableImportId = null;
+  portableBackupStatus.textContent = '';
+  if (file.size > MAX_PORTABLE_BACKUP_BYTES) {
+    portableBackupStatus.textContent =
+      `檔案超過 ${formatByteCount(MAX_PORTABLE_BACKUP_BYTES)} 上限；尚未讀取或解析。`;
+    return;
+  }
+  setPortableBackupBusy(true);
+  try {
+    const response = await sendPortableBackupMessage({
+      type: 'stage-portable-backup',
+      bytesBase64: await readFileAsBase64(file),
+    });
+    if (response.status === 'failed') {
+      portableBackupStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'staged') {
+      portableBackupStatus.textContent = 'Portable backup 檢查回應不完整。';
+      return;
+    }
+    stagedPortableImportId = response.preview.stageId;
+    renderImportPreview(response.preview);
+    portableBackupStatus.textContent =
+      '備份已在 staging 完成完整驗證與 migration；目前 learner state 尚未變更。';
+  } catch {
+    portableBackupStatus.textContent =
+      '無法檢查 Portable backup；既有資料未變更。';
+  } finally {
+    setPortableBackupBusy(false);
+  }
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  const reader = new FileReader();
+  reader.addEventListener(
+    'load',
+    () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('Portable backup file could not be read.'));
+        return;
+      }
+      const separator = reader.result.indexOf(',');
+      if (separator < 0) {
+        reject(new Error('Portable backup file encoding is invalid.'));
+        return;
+      }
+      resolve(reader.result.slice(separator + 1));
+    },
+    { once: true },
+  );
+  reader.addEventListener(
+    'error',
+    () => reject(reader.error ?? new Error('Portable backup file read failed.')),
+    { once: true },
+  );
+  reader.addEventListener(
+    'abort',
+    () =>
+      reject(
+        new DOMException(
+          'Portable backup file read was aborted.',
+          'AbortError',
+        ),
+      ),
+    { once: true },
+  );
+  reader.readAsDataURL(file);
+  return promise;
+}
+
+function renderImportPreview(preview: PortableImportPreview): void {
+  portableImportSource.textContent =
+    `來源 backup ${preview.sourceBackupId}，匯出於 ${preview.sourceExportedAt}。`;
+  renderImportCounts(portableImportCounts, preview.counts);
+  portableImportCollisions.replaceChildren(
+    ...preview.collisions.map((collision) =>
+      renderCollision(collision, undefined),
+    ),
+  );
+  if (preview.collisions.length === 0) {
+    const none = document.createElement('p');
+    none.textContent = '沒有 divergent stable-ID collision。';
+    portableImportCollisions.append(none);
+  }
+  portableImportPreview.hidden = false;
+  confirmPortableImport.focus();
+}
+
+async function commitStagedBackup(): Promise<void> {
+  if (stagedPortableImportId === null) return;
+  setPortableBackupBusy(true);
+  try {
+    const response = await sendPortableBackupMessage({
+      type: 'commit-portable-backup',
+      stageId: stagedPortableImportId,
+    });
+    if (response.status === 'failed') {
+      if (response.code === 'stale-stage') {
+        stagedPortableImportId = null;
+        portableImportPreview.hidden = true;
+        importPortableBackupFile.focus();
+      }
+      portableBackupStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'committed') {
+      portableBackupStatus.textContent = 'Portable backup 提交回應不完整。';
+      return;
+    }
+    stagedPortableImportId = null;
+    portableImportPreview.hidden = true;
+    portableBackupStatus.textContent =
+      `Import Report ${response.report.id} 已持久保存；portable state 已原子提交。`;
+    await renderImportReports();
+    exportPortableBackup.focus();
+  } catch {
+    portableBackupStatus.textContent =
+      'Portable backup 提交失敗；既有 learner state 未部分改寫，可重試同一個 stage。';
+  } finally {
+    setPortableBackupBusy(false);
+  }
+}
+
+async function renderImportReports(): Promise<void> {
+  try {
+    const response = await sendPortableBackupMessage({
+      type: 'get-import-reports',
+    });
+    if (response.status !== 'reports') return;
+    portableImportReports.replaceChildren(
+      ...response.reports.map(renderCommittedReport),
+    );
+    if (response.reports.length === 0) {
+      const empty = document.createElement('p');
+      empty.textContent = '目前沒有已提交的 Import Report。';
+      portableImportReports.append(empty);
+    }
+  } catch {
+    portableBackupStatus.textContent = '無法讀取持久化 Import Reports。';
+  }
+}
+
+function renderCommittedReport(report: PortableImportReport): HTMLElement {
+  const article = document.createElement('article');
+  article.className = 'import-report';
+  const heading = document.createElement('h4');
+  heading.textContent = `Import Report ${report.id}`;
+  const source = document.createElement('p');
+  source.textContent =
+    `來源 ${report.sourceBackupId}；提交於 ${report.committedAt}。`;
+  const counts = document.createElement('ul');
+  renderImportCounts(counts, report.counts);
+  article.append(heading, source, counts);
+  for (const collision of report.collisions) {
+    article.append(renderCollision(collision, report.id));
+  }
+  return article;
+}
+
+function renderImportCounts(
+  list: HTMLUListElement,
+  counts: PortableImportPreview['counts'],
+): void {
+  const rows = [
+    ['新增', counts.added],
+    ['相同略過', counts.identicalSkipped],
+    ['分歧並存', counts.divergentPreserved],
+  ] as const;
+  list.replaceChildren(
+    ...rows.map(([label, values]) => {
+      const summary = Object.entries(values)
+        .map(([kind, count]) => `${kind} ${count}`)
+        .join('、');
+      return createListItem(`${label}：${summary.length === 0 ? '0' : summary}`);
+    }),
+  );
+}
+
+function renderCollision(
+  collision: PortableImportPreview['collisions'][number],
+  reportId: string | undefined,
+): HTMLElement {
+  const article = document.createElement('article');
+  article.className = 'import-collision';
+  const heading = document.createElement('h4');
+  heading.textContent =
+    `${collision.recordKind} ${collision.originalId} → ${collision.importedId}`;
+  const comparison = document.createElement('div');
+  comparison.className = 'comparison';
+  comparison.append(
+    renderRecordSnapshot('本機原始 record', collision.local),
+    renderRecordSnapshot('匯入後並存 record', collision.imported),
+  );
+  article.append(heading, comparison);
+  if (reportId !== undefined) {
+    const status = document.createElement('p');
+    status.textContent = collision.acknowledged
+      ? '已確認 Keep both。'
+      : '尚未確認；兩份 record 都已保留。';
+    article.append(status);
+    if (!collision.acknowledged) {
+      const acknowledge = document.createElement('button');
+      acknowledge.type = 'button';
+      acknowledge.textContent = '確認 Keep both';
+      acknowledge.addEventListener('click', () => {
+        void acknowledgeCollision(reportId, collision.id);
+      });
+      article.append(acknowledge);
+    }
+  }
+  return article;
+}
+
+function renderRecordSnapshot(label: string, value: unknown): HTMLElement {
+  const section = document.createElement('section');
+  const heading = document.createElement('h5');
+  heading.textContent = label;
+  const snapshot = document.createElement('pre');
+  snapshot.textContent = JSON.stringify(value, null, 2);
+  section.append(heading, snapshot);
+  return section;
+}
+
+async function acknowledgeCollision(
+  reportId: string,
+  collisionId: string,
+): Promise<void> {
+  try {
+    const response = await sendPortableBackupMessage({
+      type: 'acknowledge-import-collision',
+      reportId,
+      collisionId,
+    });
+    if (response.status === 'failed') {
+      portableBackupStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'acknowledged') return;
+    portableBackupStatus.textContent =
+      '已保存 Keep both acknowledgement；兩份 record 與 provenance 均未刪除。';
+    await renderImportReports();
+  } catch {
+    portableBackupStatus.textContent = '無法保存 Keep both acknowledgement。';
+  }
+}
+
+function setPortableBackupBusy(busy: boolean): void {
+  exportPortableBackup.disabled = busy;
+  importPortableBackupFile.disabled = busy;
+  confirmPortableImport.disabled = busy || stagedPortableImportId === null;
+}
+
+async function sendPortableBackupMessage(
+  message: PortableBackupRequest,
+): Promise<PortableBackupResponse> {
+  const response: unknown = await browser.runtime.sendMessage(message);
+  return parsePortableBackupResponse(response);
 }
 
 function applyEvidencePackSnapshot(

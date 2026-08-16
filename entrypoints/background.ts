@@ -101,6 +101,16 @@ import type {
   RecentResponse,
   PronunciationAudioResponse,
 } from '../src/modules/reading-flow/messages';
+import {
+  createPortableBackupStore,
+  MAX_PORTABLE_BACKUP_BYTES,
+  PortableBackupError,
+} from '../src/modules/portability/portable-backup';
+import {
+  parsePortableBackupRequest,
+  type PortableBackupRequest,
+  type PortableBackupResponse,
+} from '../src/modules/portability/messages';
 
 const readingFlowScript = '/reading-flow.js';
 const focusEvent = 'lingo-palette:focus-selection-toolbar';
@@ -124,6 +134,21 @@ const learningItemStore = createLearningItemStore(
   createStoredEligibleSenseLookup(browser.storage.local),
   { productiveUseSchedule: reviewSessionStore },
 );
+const hasUnlimitedStorage =
+  browser.runtime
+    .getManifest()
+    .permissions?.includes('unlimitedStorage') === true;
+const localStorageQuotaBytes =
+  'QUOTA_BYTES' in browser.storage.local &&
+  typeof browser.storage.local.QUOTA_BYTES === 'number'
+    ? browser.storage.local.QUOTA_BYTES
+    : Number.MAX_SAFE_INTEGER;
+const portableBackupStore = createPortableBackupStore(browser.storage.local, {
+  quotaBytes: hasUnlimitedStorage
+    ? Number.MAX_SAFE_INTEGER
+    : localStorageQuotaBytes,
+  bundledEvidencePackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
+});
 const speechCache = createSpeechCache(browser.storage.local);
 const openAiSpeechClient = createOpenAiSpeechClient(
   import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,
@@ -307,13 +332,15 @@ const reviewPreparationQueue = createReviewPreparationQueue(
       const toEvidencePackVersion =
         lifecycle.activeVersion ??
         BUNDLED_EVIDENCE_PACK_VERSION;
-      await approvedReviewRevalidationPort.markRevalidationPending({
-        reviewItemId: item.id,
-        sweepId: `review-preparation:${toEvidencePackVersion}`,
-        fromEvidencePackVersion:
-          item.provenance.evidencePack.version,
-        toEvidencePackVersion,
-      });
+      await serializePortableStateMutation(() =>
+        approvedReviewRevalidationPort.markRevalidationPending({
+          reviewItemId: item.id,
+          sweepId: `review-preparation:${toEvidencePackVersion}`,
+          fromEvidencePackVersion:
+            item.provenance.evidencePack.version,
+          toEvidencePackVersion,
+        }),
+      );
     },
     async reservation(job) {
       const settings = await openAiConfigurationStore.loadSettings();
@@ -362,11 +389,13 @@ const reviewPreparationQueue = createReviewPreparationQueue(
     worker: reviewPreparationWorker,
     activation: {
       async activate({ job, result }) {
-        await reviewSessionStore.activatePrepared({
-          item: result.item,
-          replacedReviewItemId: job.replacedReviewItemId,
-          schedule: result.schedule,
-        });
+        await serializePortableStateMutation(() =>
+          reviewSessionStore.activatePrepared({
+            item: result.item,
+            replacedReviewItemId: job.replacedReviewItemId,
+            schedule: result.schedule,
+          }),
+        );
       },
     },
   },
@@ -525,6 +554,7 @@ const serializeQuickHintCacheWrite = createSerialExecutor();
 const serializeDeepDiveCacheWrite = createSerialExecutor();
 const serializeDeepDiveLifecycle = createSerialExecutor();
 const serializeOpenAiConfigurationMutation = createSerialExecutor();
+const serializePortableStateMutation = createSerialExecutor();
 
 const serializeReviewPreparation = createSerialExecutor();
 const reviewPreparationAlarm = 'review-preparation';
@@ -598,7 +628,8 @@ function registerBackgroundListeners(): void {
         | OpenAiSettingsRequest
         | LearningRequest
         | EvidencePackRequest
-        | ReviewRequest,
+        | ReviewRequest
+        | PortableBackupRequest,
       sender,
     ):
       | Promise<
@@ -611,6 +642,7 @@ function registerBackgroundListeners(): void {
           | LearningResponse
           | EvidencePackResponse
           | ReviewResponse
+          | PortableBackupResponse
         >
       | undefined => {
       if (message.type === 'site-status') {
@@ -668,7 +700,12 @@ function registerBackgroundListeners(): void {
         message.type === 'advance-review-session' ||
         message.type === 'resume-review-preparation'
       ) {
-        return handleReviewRequest(message, sender);
+        return message.type === 'get-review-session' ||
+          message.type === 'resume-review-preparation'
+          ? handleReviewRequest(message, sender)
+          : serializePortableStateMutation(() =>
+              handleReviewRequest(message, sender),
+            );
       }
       if (
         message.type === 'get-evidence-pack-status' ||
@@ -677,6 +714,17 @@ function registerBackgroundListeners(): void {
         message.type === 'rollback-evidence-pack'
       ) {
         return handleEvidencePackRequest(message, sender);
+      }
+      if (
+        message.type === 'export-portable-backup' ||
+        message.type === 'stage-portable-backup' ||
+        message.type === 'commit-portable-backup' ||
+        message.type === 'get-import-reports' ||
+        message.type === 'acknowledge-import-collision'
+      ) {
+        return serializePortableStateMutation(() =>
+          handlePortableBackupRequest(message, sender),
+        );
       }
       return handleOpenAiSettings(message, sender);
     },
@@ -829,16 +877,18 @@ async function generateQuickHintRequest(
       };
     }
     activity.completionClaimed = true;
-    await lookupRecordStore.append({
-      selection: providerSelection,
-      action: { type: 'quick-hint', result: outcome.result },
-      usage: {
-        source: outcome.source,
-        attempts: outcome.attempts,
-        provider: outcome.usage,
-      },
-      ...(sender.url === undefined ? {} : { sourceUrl: sender.url }),
-    });
+    await serializePortableStateMutation(() =>
+      lookupRecordStore.append({
+        selection: providerSelection,
+        action: { type: 'quick-hint', result: outcome.result },
+        usage: {
+          source: outcome.source,
+          attempts: outcome.attempts,
+          provider: outcome.usage,
+        },
+        ...(sender.url === undefined ? {} : { sourceUrl: sender.url }),
+      }),
+    );
     return { status: 'completed', ...outcome };
   } catch (error) {
     if (error instanceof AssistanceFailure) {
@@ -1142,23 +1192,25 @@ async function executeDeepDive(
           result: outcome.result,
         },
         async (deepDiveItems) => {
-          await lookupRecordStore.append(
-            {
-              selection,
-              action: { type: 'deep-dive', result: outcome.result },
-              usage: {
-                source: outcome.source,
-                attempts: outcome.attempts,
-                provider: outcome.usage,
+          await serializePortableStateMutation(() =>
+            lookupRecordStore.append(
+              {
+                selection,
+                action: { type: 'deep-dive', result: outcome.result },
+                usage: {
+                  source: outcome.source,
+                  attempts: outcome.attempts,
+                  provider: outcome.usage,
+                },
+                ...(sourceUrl === undefined ? {} : { sourceUrl }),
               },
-              ...(sourceUrl === undefined ? {} : { sourceUrl }),
-            },
-            async (lookupItems) => {
-              await browser.storage.local.set({
-                ...deepDiveItems,
-                ...lookupItems,
-              });
-            },
+              async (lookupItems) => {
+                await browser.storage.local.set({
+                  ...deepDiveItems,
+                  ...lookupItems,
+                });
+              },
+            ),
           );
         },
       );
@@ -1209,6 +1261,79 @@ async function getRecent(
   return { status: 'loaded', records: await lookupRecordStore.list() };
 }
 
+async function handlePortableBackupRequest(
+  untrustedMessage: PortableBackupRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<PortableBackupResponse> {
+  if (!isTrustedExtensionSender(sender)) {
+    return {
+      status: 'failed',
+      code: 'untrusted-sender',
+      message: '只有 Lingo Palette extension-owned Settings 可以匯出或匯入備份。',
+    };
+  }
+  try {
+    const message = parsePortableBackupRequest(untrustedMessage);
+    if (message.type === 'export-portable-backup') {
+      const exported = await portableBackupStore.exportBackup();
+      return {
+        status: 'exported',
+        filename: exported.filename,
+        text: new TextDecoder().decode(exported.bytes),
+        warning: exported.warning,
+      };
+    }
+    if (message.type === 'stage-portable-backup') {
+      const preview = await portableBackupStore.stageImport(
+        decodePortableBackupBase64(message.bytesBase64),
+      );
+      return { status: 'staged', preview };
+    }
+    if (message.type === 'commit-portable-backup') {
+      const report = await portableBackupStore.commitImport(message.stageId);
+      return { status: 'committed', report };
+    }
+    if (message.type === 'acknowledge-import-collision') {
+      const report = await portableBackupStore.acknowledgeKeepBoth(
+        message.reportId,
+        message.collisionId,
+      );
+      return { status: 'acknowledged', report };
+    }
+    return {
+      status: 'reports',
+      reports: await portableBackupStore.listImportReports(),
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      code:
+        error instanceof PortableBackupError ? error.code : 'unexpected-error',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Portable backup 操作失敗；既有資料未變更。',
+    };
+  }
+}
+
+function decodePortableBackupBase64(value: string): Uint8Array {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const byteLength = (value.length / 4) * 3 - padding;
+  if (byteLength > MAX_PORTABLE_BACKUP_BYTES) {
+    throw new PortableBackupError(
+      'oversized',
+      `備份超過 ${MAX_PORTABLE_BACKUP_BYTES.toLocaleString('en-US')} bytes 上限；尚未解析。`,
+    );
+  }
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
 async function handleLearningRequest(
   message: LearningRequest,
   sender: Browser.runtime.MessageSender,
@@ -1222,29 +1347,41 @@ async function handleLearningRequest(
   await backgroundInitialization;
   try {
     if (message.type === 'save-lookup') {
-      const lookup = (await lookupRecordStore.list()).find(
-        (record) => record.id === message.lookupRecordId,
-      );
-      if (lookup === undefined) {
+      const saved = await serializePortableStateMutation(async () => {
+        const lookup = (await lookupRecordStore.list()).find(
+          (record) => record.id === message.lookupRecordId,
+        );
+        if (lookup === undefined) return false;
+        await learningItemStore.saveLookup(lookup);
+        return true;
+      });
+      if (!saved) {
         return { status: 'failed', message: '找不到要儲存的 Lookup Record。' };
       }
-      await learningItemStore.saveLookup(lookup);
     } else if (message.type === 'resolve-merge-suggestion') {
-      await learningItemStore.resolveMergeSuggestion(
-        message.suggestionId,
-        message.decision,
+      await serializePortableStateMutation(() =>
+        learningItemStore.resolveMergeSuggestion(
+          message.suggestionId,
+          message.decision,
+        ),
       );
     } else if (message.type === 'undo-learning-mutation') {
-      await learningItemStore.undoMutation(message.mutationId);
+      await serializePortableStateMutation(() =>
+        learningItemStore.undoMutation(message.mutationId),
+      );
     } else if (message.type === 'reclassify-encounter') {
-      await learningItemStore.reclassifyEncounter(
-        message.encounterId,
-        message.targetLearningItemId,
+      await serializePortableStateMutation(() =>
+        learningItemStore.reclassifyEncounter(
+          message.encounterId,
+          message.targetLearningItemId,
+        ),
       );
     } else if (message.type === 'set-productive-use-intent') {
-      await learningItemStore.setProductiveUseIntent(
-        message.learningItemId,
-        message.enabled,
+      await serializePortableStateMutation(() =>
+        learningItemStore.setProductiveUseIntent(
+          message.learningItemId,
+          message.enabled,
+        ),
       );
     }
     await synchronizeReviewPreparation();
@@ -1337,22 +1474,26 @@ async function handleEvidencePackRequest(
         };
       }
       if (message.type === 'confirm-evidence-pack-activation') {
-        await evidencePackLifecycle.confirmActivation({
-          candidateId: message.candidateId,
-        });
-        void continueEvidencePackRevalidation();
+        await serializePortableStateMutation(() =>
+          evidencePackLifecycle.confirmActivation({
+            candidateId: message.candidateId,
+          }),
+        );
         await synchronizeReviewPreparation();
         await armReviewPreparationAlarm();
+        void continueEvidencePackRevalidation();
         return {
           status: 'activated',
           snapshot: await evidencePackSnapshot(),
         };
       }
       if (message.type === 'rollback-evidence-pack') {
-        await evidencePackLifecycle.rollback();
-        void continueEvidencePackRevalidation();
+        await serializePortableStateMutation(() =>
+          evidencePackLifecycle.rollback(),
+        );
         await synchronizeReviewPreparation();
         await armReviewPreparationAlarm();
+        void continueEvidencePackRevalidation();
         return {
           status: 'rolled-back',
           snapshot: await evidencePackSnapshot(),
@@ -1378,9 +1519,11 @@ async function handleEvidencePackRequest(
 
 async function processEvidencePackRevalidationBatch(): Promise<void> {
   try {
-    const status = await evidencePackLifecycle.processNextRevalidationBatch(
-      approvedReviewRevalidationPort,
-      evidencePackRevalidationBatchSize,
+    const status = await serializePortableStateMutation(() =>
+      evidencePackLifecycle.processNextRevalidationBatch(
+        approvedReviewRevalidationPort,
+        evidencePackRevalidationBatchSize,
+      ),
     );
     if (status === 'pending') await scheduleEvidencePackRevalidationRetry();
   } catch {
@@ -1533,7 +1676,9 @@ async function handleOpenAiSettings(
       };
     }
     if (message.type === 'update-openai-budget') {
-      await budgetLedger.configure(message.budget);
+      await serializePortableStateMutation(() =>
+        budgetLedger.configure(message.budget),
+      );
       return {
         status: 'budget-updated',
         settings: await loadOpenAiSettings(),
@@ -1571,8 +1716,12 @@ async function handleOpenAiSettings(
       }
     }
     const activated = await serializeOpenAiConfigurationMutation(async () => {
-      if (activationVersion !== openAiActivationVersion) return false;
-      await openAiConfigurationStore.activate(configuration, message.apiKey);
+      const committed = await serializePortableStateMutation(async () => {
+        if (activationVersion !== openAiActivationVersion) return false;
+        await openAiConfigurationStore.activate(configuration, message.apiKey);
+        return true;
+      });
+      if (!committed) return false;
       await synchronizeReviewPreparation();
       await armReviewPreparationAlarm();
       return true;
