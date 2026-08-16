@@ -1,3 +1,9 @@
+import type { DogfoodActivitySnapshot } from '../../src/modules/dogfood/activity-store';
+import { evaluateDogfoodActivity } from '../../src/modules/dogfood/exit-gate';
+import type {
+  DogfoodActivityRequest,
+  DogfoodActivityResponse,
+} from '../../src/modules/dogfood/messages';
 import {
   BUNDLED_EVIDENCE_PACK_VERSION,
   SUPPORTED_EVIDENCE_PACK_RELEASES,
@@ -146,6 +152,22 @@ const portableImportReports = requiredElement<HTMLDivElement>(
   'portable-import-reports',
 );
 let stagedPortableImportId: string | null = null;
+const startDogfoodCollection = requiredElement<HTMLButtonElement>(
+  'start-dogfood-collection',
+);
+const pauseDogfoodCollection = requiredElement<HTMLButtonElement>(
+  'pause-dogfood-collection',
+);
+const exportDogfoodActivity = requiredElement<HTMLButtonElement>(
+  'export-dogfood-activity',
+);
+const dogfoodActivitySummary = requiredElement<HTMLUListElement>(
+  'dogfood-activity-summary',
+);
+const dogfoodActivityStatus = requiredElement<HTMLParagraphElement>(
+  'dogfood-activity-status',
+);
+let currentDogfoodSnapshot: DogfoodActivitySnapshot | null = null;
 openAiForm.addEventListener('submit', (event) => {
   event.preventDefault();
   void activateOpenAiConfiguration();
@@ -185,6 +207,15 @@ importPortableBackupFile.addEventListener('change', () => {
 confirmPortableImport.addEventListener('click', () => {
   void commitStagedBackup();
 });
+startDogfoodCollection.addEventListener('click', () => {
+  void updateDogfoodCollection('start-dogfood-collection');
+});
+pauseDogfoodCollection.addEventListener('click', () => {
+  void updateDogfoodCollection('pause-dogfood-collection');
+});
+exportDogfoodActivity.addEventListener('click', () => {
+  void exportDogfoodActivityToChosenFile();
+});
 renderModelOptions();
 renderInstructionCount();
 
@@ -193,6 +224,7 @@ void renderEnabledSites();
 void renderCommandBinding();
 void renderEvidencePackStatus();
 void renderImportReports();
+void renderDogfoodActivity();
 
 function renderModelOptions(): void {
   const descriptions = ['預設', '較低成本'] as const;
@@ -627,6 +659,133 @@ async function rollbackActiveEvidencePack(): Promise<void> {
     setEvidencePackBusy(false);
   }
 }
+async function renderDogfoodActivity(): Promise<void> {
+  try {
+    const response = await sendDogfoodActivityMessage({
+      type: 'get-dogfood-activity',
+    });
+    if (response.status === 'failed') {
+      dogfoodActivityStatus.textContent = response.message;
+      return;
+    }
+    if (response.status !== 'loaded') {
+      dogfoodActivityStatus.textContent = 'Dogfood activity 回應不完整。';
+      return;
+    }
+    renderDogfoodActivitySnapshot(response.snapshot);
+  } catch {
+    dogfoodActivityStatus.textContent = '無法連線至 dogfood activity store。';
+    setDogfoodActivityBusy(false);
+  }
+}
+
+async function updateDogfoodCollection(
+  type: 'start-dogfood-collection' | 'pause-dogfood-collection',
+): Promise<void> {
+  setDogfoodActivityBusy(true);
+  try {
+    const response = await sendDogfoodActivityMessage({ type });
+    if (response.status !== 'loaded') {
+      dogfoodActivityStatus.textContent =
+        response.status === 'failed'
+          ? response.message
+          : 'Dogfood activity 回應不完整。';
+      return;
+    }
+    renderDogfoodActivitySnapshot(response.snapshot);
+  } catch {
+    dogfoodActivityStatus.textContent = '無法更新 dogfood collection 狀態。';
+  } finally {
+    setDogfoodActivityBusy(false);
+  }
+}
+
+async function exportDogfoodActivityToChosenFile(): Promise<void> {
+  setDogfoodActivityBusy(true);
+  try {
+    const response = await sendDogfoodActivityMessage({
+      type: 'get-dogfood-activity',
+    });
+    if (response.status !== 'loaded' || response.snapshot === null) {
+      dogfoodActivityStatus.textContent =
+        response.status === 'failed'
+          ? response.message
+          : '尚未開始 dogfood collection，沒有可匯出的 activity。';
+      return;
+    }
+    const filename =
+      `lingo-palette-dogfood-${response.snapshot.startedLocalDate}-${response.snapshot.runId}.json`;
+    await saveTextFile(filename, `${JSON.stringify(response.snapshot, null, 2)}\n`);
+    dogfoodActivityStatus.textContent =
+      `已匯出 ${filename}；檔案不含 Selection 或 Reading Context 文字。`;
+  } catch (error) {
+    dogfoodActivityStatus.textContent =
+      error instanceof DOMException && error.name === 'AbortError'
+        ? '已取消匯出，未寫入檔案。'
+        : 'Dogfood activity 匯出失敗。';
+  } finally {
+    setDogfoodActivityBusy(false);
+  }
+}
+
+function renderDogfoodActivitySnapshot(
+  snapshot: DogfoodActivitySnapshot | null,
+): void {
+  currentDogfoodSnapshot = snapshot;
+  if (snapshot === null) {
+    dogfoodActivitySummary.replaceChildren(
+      createListItem('尚未開始收集。'),
+    );
+    dogfoodActivityStatus.textContent =
+      '開始後只記錄 release-gate metadata；不記錄 Selection 文字。';
+    startDogfoodCollection.disabled = false;
+    pauseDogfoodCollection.disabled = true;
+    exportDogfoodActivity.disabled = true;
+    return;
+  }
+  const summary = evaluateDogfoodActivity([snapshot]).summary;
+  dogfoodActivitySummary.replaceChildren(
+    createListItem(`日曆跨度：${summary.calendarSpanDays} / 14 日`),
+    createListItem(`Selections：${summary.selectionCount} / 100`),
+    createListItem(
+      `Enabled Site domains：${summary.enabledSiteDomainCount} / 10`,
+    ),
+    createListItem(
+      `Saved Learning Items：${summary.savedLearningItemCount} / 30`,
+    ),
+    createListItem(
+      `Review Sessions：${summary.completedReviewSessionCount} / 5；${summary.reviewSessionDayCount} / 3 日`,
+    ),
+    createListItem(
+      `Pronunciation Playbacks：${summary.pronunciationPlaybackCount} / 20；multi-sentence ${summary.multiSentencePlaybackCount} / 5；varieties ${summary.pronunciationVarieties.join(', ') || '尚無'}`,
+    ),
+    createListItem(
+      `Export → import sequences：${summary.successfulBackupSequenceCount} / 1`,
+    ),
+  );
+  dogfoodActivityStatus.textContent = snapshot.enabled
+    ? `正在收集；run ${snapshot.runId}。`
+    : `已暫停；run ${snapshot.runId} 的既有 evidence 保留。`;
+  startDogfoodCollection.disabled = snapshot.enabled;
+  pauseDogfoodCollection.disabled = !snapshot.enabled;
+  exportDogfoodActivity.disabled = false;
+}
+
+function setDogfoodActivityBusy(busy: boolean): void {
+  startDogfoodCollection.disabled =
+    busy || currentDogfoodSnapshot?.enabled === true;
+  pauseDogfoodCollection.disabled =
+    busy || currentDogfoodSnapshot?.enabled !== true;
+  exportDogfoodActivity.disabled =
+    busy || currentDogfoodSnapshot === null;
+}
+
+async function sendDogfoodActivityMessage(
+  message: DogfoodActivityRequest,
+): Promise<DogfoodActivityResponse> {
+  return browser.runtime.sendMessage(message) as Promise<DogfoodActivityResponse>;
+}
+
 async function exportBackupToChosenFile(): Promise<void> {
   setPortableBackupBusy(true);
   portableBackupStatus.textContent = '';
@@ -678,7 +837,7 @@ async function saveTextFile(filename: string, text: string): Promise<void> {
       suggestedName: filename,
       types: [
         {
-          description: 'Lingo Palette portable backup',
+          description: 'Lingo Palette JSON evidence or backup',
           accept: { 'application/json': ['.json'] },
         },
       ],

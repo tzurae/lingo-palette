@@ -33,6 +33,15 @@ import { planReviewPreparationTargets } from '../src/modules/review/review-prepa
 import { BUNDLED_ENGLISH_EVIDENCE_PACK } from '../src/modules/evidence/bundled-english-evidence-pack';
 import { z } from 'zod';
 import {
+  createDogfoodActivityStore,
+  type DogfoodActivityInput,
+} from '../src/modules/dogfood/activity-store';
+import {
+  parseDogfoodActivityRequest,
+  type DogfoodActivityRequest,
+  type DogfoodActivityResponse,
+} from '../src/modules/dogfood/messages';
+import {
   createBrowserApprovedReviewRevalidationPort,
   createBrowserEvidencePackLifecycleStorage,
   createTrustedEvidencePackTransport,
@@ -119,6 +128,7 @@ const openAiConfigurationStore = createOpenAiConfigurationStore(
 );
 const budgetLedger = createBudgetLedger(browser.storage.local);
 const lookupRecordStore = createLookupRecordStore(browser.storage.local);
+const dogfoodActivityStore = createDogfoodActivityStore(browser.storage.local);
 const evidencePackLifecycle = createEvidencePackLifecycle({
   extensionVersion: browser.runtime.getManifest().version,
   fallbackEvidencePackVersion: BUNDLED_EVIDENCE_PACK_VERSION,
@@ -629,7 +639,8 @@ function registerBackgroundListeners(): void {
         | LearningRequest
         | EvidencePackRequest
         | ReviewRequest
-        | PortableBackupRequest,
+        | PortableBackupRequest
+        | DogfoodActivityRequest,
       sender,
     ):
       | Promise<
@@ -643,6 +654,7 @@ function registerBackgroundListeners(): void {
           | EvidencePackResponse
           | ReviewResponse
           | PortableBackupResponse
+          | DogfoodActivityResponse
         >
       | undefined => {
       if (message.type === 'site-status') {
@@ -679,6 +691,15 @@ function registerBackgroundListeners(): void {
       }
       if (message.type === 'cancel-pronunciation-audio') {
         return cancelPronunciationAudio(message.requestId);
+      }
+      if (
+        message.type === 'start-dogfood-collection' ||
+        message.type === 'pause-dogfood-collection' ||
+        message.type === 'get-dogfood-activity' ||
+        message.type === 'record-dogfood-selection' ||
+        message.type === 'record-dogfood-pronunciation'
+      ) {
+        return handleDogfoodActivityRequest(message, sender);
       }
       if (message.type === 'get-recent') {
         return getRecent(sender);
@@ -791,6 +812,69 @@ async function enableSite(
   }
 
   return { enabled: true };
+}
+
+async function handleDogfoodActivityRequest(
+  untrustedMessage: DogfoodActivityRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<DogfoodActivityResponse> {
+  try {
+    const message = parseDogfoodActivityRequest(untrustedMessage);
+    if (
+      message.type === 'record-dogfood-selection' ||
+      message.type === 'record-dogfood-pronunciation'
+    ) {
+      const origin = originForSender(sender);
+      if (
+        origin === null ||
+        !(await browser.permissions.contains({ origins: [`${origin}/*`] }))
+      ) {
+        return { status: 'ignored' };
+      }
+      const recorded = await dogfoodActivityStore.record(
+        message.type === 'record-dogfood-selection'
+          ? { kind: 'selection', origin }
+          : {
+              kind: 'pronunciation-playback-completed',
+              origin,
+              variety: message.variety,
+              sentenceCount: message.sentenceCount,
+            },
+      );
+      return { status: recorded === null ? 'ignored' : 'recorded' };
+    }
+    if (!isTrustedExtensionSender(sender)) {
+      return {
+        status: 'failed',
+        message: '只有 Lingo Palette extension-owned Settings 可以管理 dogfood evidence。',
+      };
+    }
+    const snapshot =
+      message.type === 'start-dogfood-collection'
+        ? await dogfoodActivityStore.start()
+        : message.type === 'pause-dogfood-collection'
+          ? await dogfoodActivityStore.pause()
+          : await dogfoodActivityStore.snapshot();
+    return { status: 'loaded', snapshot };
+  } catch (error) {
+    return {
+      status: 'failed',
+      message:
+        error instanceof Error
+          ? error.message
+          : '無法讀寫 dogfood activity evidence。',
+    };
+  }
+}
+
+async function recordDogfoodActivity(
+  input: DogfoodActivityInput,
+): Promise<void> {
+  try {
+    await dogfoodActivityStore.record(input);
+  } catch {
+    // Evidence remains fail-closed without interrupting the Learner's Reading Flow.
+  }
 }
 
 async function generateQuickHint(
@@ -1276,6 +1360,10 @@ async function handlePortableBackupRequest(
     const message = parsePortableBackupRequest(untrustedMessage);
     if (message.type === 'export-portable-backup') {
       const exported = await portableBackupStore.exportBackup();
+      await recordDogfoodActivity({
+        kind: 'portable-backup-exported',
+        backupFilename: exported.filename,
+      });
       return {
         status: 'exported',
         filename: exported.filename,
@@ -1291,6 +1379,10 @@ async function handlePortableBackupRequest(
     }
     if (message.type === 'commit-portable-backup') {
       const report = await portableBackupStore.commitImport(message.stageId);
+      await recordDogfoodActivity({
+        kind: 'portable-backup-imported',
+        importReportId: report.id,
+      });
       return { status: 'committed', report };
     }
     if (message.type === 'acknowledge-import-collision') {
@@ -1347,16 +1439,26 @@ async function handleLearningRequest(
   await backgroundInitialization;
   try {
     if (message.type === 'save-lookup') {
-      const saved = await serializePortableStateMutation(async () => {
+      const savedActivity = await serializePortableStateMutation(async () => {
         const lookup = (await lookupRecordStore.list()).find(
           (record) => record.id === message.lookupRecordId,
         );
-        if (lookup === undefined) return false;
-        await learningItemStore.saveLookup(lookup);
-        return true;
+        if (lookup === undefined) return undefined;
+        const result = await learningItemStore.saveLookup(lookup);
+        if (result.outcome !== 'created-separate') return null;
+        return {
+          kind: 'learning-item-saved' as const,
+          learningItemId: result.learningItemId,
+          ...(lookup.sourceUrl === undefined
+            ? {}
+            : { origin: new URL(lookup.sourceUrl).origin }),
+        };
       });
-      if (!saved) {
+      if (savedActivity === undefined) {
         return { status: 'failed', message: '找不到要儲存的 Lookup Record。' };
+      }
+      if (savedActivity !== null) {
+        await recordDogfoodActivity(savedActivity);
       }
     } else if (message.type === 'resolve-merge-suggestion') {
       await serializePortableStateMutation(() =>
@@ -1440,7 +1542,14 @@ async function handleReviewRequest(
         },
       };
     }
-    return reviewSessionStore.advance(message.sessionId);
+    const response = await reviewSessionStore.advance(message.sessionId);
+    if (response.status === 'completed') {
+      await recordDogfoodActivity({
+        kind: 'review-session-completed',
+        reviewSessionId: response.session.id,
+      });
+    }
+    return response;
   } catch (error) {
     return {
       status: 'failed',

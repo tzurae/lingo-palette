@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chromium } from 'playwright-core';
 import type { BrowserContext, Frame, Locator, Page, Worker } from 'playwright-core';
+import { DOGFOOD_ACTIVITY_STORAGE_KEY } from './modules/dogfood/activity-store';
 import { scriptIdFor } from './modules/reading-flow/site-permission';
 import {
   DEFAULT_OPENAI_CONFIGURATION,
@@ -1037,6 +1038,60 @@ describe('unpacked extension Reading Flow', () => {
       .toBe(true);
     await settings.close();
   });
+
+  it('collects privacy-safe unpacked dogfood activity only after explicit opt-in', async () => {
+    await worker.evaluate(
+      async (key) => chrome.storage.local.remove(key),
+      DOGFOOD_ACTIVITY_STORAGE_KEY,
+    );
+    const settings = await context.newPage();
+    await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
+    await settings
+      .getByRole('button', { name: '開始／繼續收集' })
+      .click();
+    await expect
+      .poll(() => settings.locator('#dogfood-activity-status').textContent())
+      .toContain('正在收集');
+
+    await page.goto(origin);
+    await selectTextByPointer(page, '#copy', 'decided to postpone');
+    await expect
+      .poll(() =>
+        worker.evaluate(async (key) => {
+          const state = (await chrome.storage.local.get(key))[key] as
+            | { events?: Array<{ kind?: string }> }
+            | undefined;
+          return state?.events?.filter((event) => event.kind === 'selection')
+            .length;
+        }, DOGFOOD_ACTIVITY_STORAGE_KEY),
+      )
+      .toBe(1);
+    const activity = await worker.evaluate(
+      async (key) => (await chrome.storage.local.get(key))[key],
+      DOGFOOD_ACTIVITY_STORAGE_KEY,
+    );
+    expect(JSON.stringify(activity)).not.toContain('decided to postpone');
+    expect(JSON.stringify(activity)).toContain(origin);
+
+    await settings.reload();
+    await expect
+      .poll(() => settings.getByText('Selections：1 / 100').isVisible())
+      .toBe(true);
+    await settings
+      .getByRole('region', { name: 'Unpacked dogfood evidence' })
+      .screenshot({
+        path: resolve('docs/assets/issue-19-dogfood-collector.png'),
+      });
+    await settings.getByRole('button', { name: '暫停收集' }).click();
+    await expect
+      .poll(() => settings.locator('#dogfood-activity-status').textContent())
+      .toContain('已暫停');
+    await settings.close();
+    await worker.evaluate(
+      async (key) => chrome.storage.local.remove(key),
+      DOGFOOD_ACTIVITY_STORAGE_KEY,
+    );
+  }, 15_000);
 
   it('configures a masked local key, exact model, workload efforts, and bounded Personal Instructions', async () => {
     const settings = await context.newPage();
