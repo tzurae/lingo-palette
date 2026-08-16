@@ -549,7 +549,7 @@ export const RESILIENCE_MATRIX: readonly ResilienceMatrixRow[] = [
     id: 'pack-invalid-signature',
     riskArea: 'evidence-pack-safety',
     setup: 'Retain an active known-good pack and fetch a supported candidate manifest.',
-    injectedFault: 'Provide a detached signature that does not verify against the packaged public key.',
+    injectedFault: 'Omit the detached signature or provide one that does not verify against the packaged public key.',
     observableLearnerState: 'Candidate inspection fails closed and the current pack remains usable.',
     persistedAftermath: 'No candidate files or active pointer are committed.',
     budgetEffect: 'Pack validation consumes no provider budget.',
@@ -559,6 +559,11 @@ export const RESILIENCE_MATRIX: readonly ResilienceMatrixRow[] = [
         'pack-invalid-signature',
         evidenceLifecycleTests,
         'rejects an invalid manifest signature without staging a candidate',
+      ),
+      regression(
+        'pack-missing-signature-preserves-known-good',
+        evidenceLifecycleTests,
+        'preserves the active known-good pack across every staging and activation interruption',
       ),
     ],
   }),
@@ -660,6 +665,11 @@ export const RESILIENCE_MATRIX: readonly ResilienceMatrixRow[] = [
         evidenceLifecycleTests,
         'stages a signed supported release, activates only after confirmation, and rolls back',
       ),
+      regression(
+        'pack-rollback-provenance',
+        'src/modules/review/review-generation-harness.test.ts',
+        'requires revalidation when any approval pin changes',
+      ),
     ],
   }),
 
@@ -716,6 +726,24 @@ export const RESILIENCE_MATRIX: readonly ResilienceMatrixRow[] = [
         'backup-invalid-input',
         portabilityTests,
         'rejects malformed, future, duplicate, oversized, and quota-exceeding inputs without changing learner state',
+      ),
+    ],
+  }),
+
+  row({
+    id: 'configuration-provider',
+    riskArea: 'configuration-integrity',
+    setup: 'Use the configured OpenAI provider with an uncached request and available local budget.',
+    injectedFault: 'Return any terminal provider-side failure.',
+    observableLearnerState: 'The exact OpenAI failure is shown; no alternate provider or answer is selected.',
+    persistedAftermath: 'Provider configuration, Selection, cache, and learner state remain unchanged.',
+    budgetEffect: 'One attempt at most; unused reservation releases and reported usage reconciles.',
+    recoveryAction: 'Correct the provider-side fault and explicitly retry the same provider contract.',
+    evidence: [
+      regression(
+        'configuration-provider-no-fallback',
+        readingFlowTests,
+        'surfaces every terminal provider failure without retry and blocks locally at zero',
       ),
     ],
   }),
