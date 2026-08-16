@@ -15,6 +15,7 @@ import {
   type RemoteAudio,
   type VoiceDiscovery,
 } from '../src/modules/pronunciation/playback';
+import { countSelectionSentences } from '../src/modules/dogfood/activity-store';
 import type {
   DeepDiveResponse,
   EnableSiteResponse,
@@ -53,6 +54,9 @@ function startReadingFlow(): void {
   let host: HTMLElement | null = null;
   let shadow: ShadowRoot | null = null;
   let enabled = false;
+  const recordedSelectionActivity = new Set<string>();
+  const submittedSelectionActivity = new Set<string>();
+  let pendingSelectionActivity: string | null = null;
   let visibilityMeasurementVersion = 0;
   let quickHintRequestVersion = 0;
   let quickHintBusy = false;
@@ -67,13 +71,13 @@ function startReadingFlow(): void {
     .sendMessage({ type: 'site-status', origin: location.origin })
     .then((response: EnableSiteResponse) => {
       enabled = response.enabled;
-      showForCurrentSelection(false, performance.now());
+      showForCurrentSelection(false, performance.now(), false);
     });
 
   document.addEventListener('pointerup', (event) => {
     if (host !== null && event.composedPath().includes(host)) return;
     const selectionStableAt = performance.now();
-    queueMicrotask(() => showForCurrentSelection(false, selectionStableAt));
+    queueMicrotask(() => showForCurrentSelection(false, selectionStableAt, true));
   });
   document.addEventListener('keyup', (event) => {
     if (
@@ -83,11 +87,14 @@ function startReadingFlow(): void {
       return;
     }
     const selectionStableAt = performance.now();
-    queueMicrotask(() => showForCurrentSelection(false, selectionStableAt));
+    const selectionFinished = !event.shiftKey;
+    queueMicrotask(() =>
+      showForCurrentSelection(false, selectionStableAt, selectionFinished),
+    );
   });
   window.addEventListener(focusEvent, () => {
     if (document.activeElement instanceof HTMLIFrameElement) return;
-    showForCurrentSelection(true, performance.now());
+    showForCurrentSelection(true, performance.now(), false);
   });
   browser.runtime.onMessage.addListener((message: unknown) => {
     if (
@@ -124,6 +131,7 @@ function startReadingFlow(): void {
   function showForCurrentSelection(
     focusControls: boolean,
     selectionStableAt: number,
+    recordActivity: boolean,
   ): void {
     const nextSnapshot = captureSelection(document, document.getSelection());
     if (nextSnapshot === null) {
@@ -131,6 +139,17 @@ function startReadingFlow(): void {
       return;
     }
 
+    const activityKey = JSON.stringify(nextSnapshot.selection);
+    if (
+      recordActivity &&
+      !recordedSelectionActivity.has(activityKey) &&
+      !submittedSelectionActivity.has(activityKey)
+    ) {
+      pendingSelectionActivity = activityKey;
+    }
+    if (enabled && pendingSelectionActivity === activityKey) {
+      submitSelectionActivity(activityKey);
+    }
     invalidateQuickHintRequest();
     pronunciationPlayback.reset();
     snapshot = nextSnapshot;
@@ -143,6 +162,25 @@ function startReadingFlow(): void {
     if (focusControls) {
       firstInteractiveElement()?.focus({ preventScroll: true });
     }
+  }
+
+  function submitSelectionActivity(activityKey: string): void {
+    submittedSelectionActivity.add(activityKey);
+    pendingSelectionActivity = null;
+    void browser.runtime
+      .sendMessage({ type: 'record-dogfood-selection' })
+      .then((response: unknown) => {
+        if (
+          typeof response === 'object' &&
+          response !== null &&
+          'status' in response &&
+          response.status === 'recorded'
+        ) {
+          recordedSelectionActivity.add(activityKey);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => submittedSelectionActivity.delete(activityKey));
   }
 
   function recordVisibleControlsFrame(selectionStableAt: number): void {
@@ -304,7 +342,17 @@ function startReadingFlow(): void {
     variety: PronunciationVariety,
   ): Promise<void> {
     if (snapshot === null) return;
-    await pronunciationPlayback.start(snapshot.selection.text, variety);
+    const selectionText = snapshot.selection.text;
+    await pronunciationPlayback.start(selectionText, variety);
+    const completed = pronunciationPlayback.getState();
+    if (completed.status !== 'completed') return;
+    void browser.runtime
+      .sendMessage({
+        type: 'record-dogfood-pronunciation',
+        variety,
+        sentenceCount: countSelectionSentences(selectionText),
+      })
+      .catch(() => undefined);
   }
 
   function togglePronunciationPause(): void {
@@ -394,6 +442,12 @@ function startReadingFlow(): void {
       return;
     }
     enabled = true;
+    if (
+      snapshot !== null &&
+      pendingSelectionActivity === JSON.stringify(snapshot.selection)
+    ) {
+      submitSelectionActivity(pendingSelectionActivity);
+    }
     renderControls();
     placeSurface();
     firstInteractiveElement()?.focus({ preventScroll: true });

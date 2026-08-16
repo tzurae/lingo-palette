@@ -1,0 +1,83 @@
+name: Unpacked Dogfood Exit Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_release_tag:
+        description: Draft GitHub Release tag containing manifest.json and every referenced evidence artifact
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/dogfood-exit-gate.yml'
+      - 'entrypoints/**'
+      - 'src/modules/dogfood/**'
+      - 'src/modules/smoke/**'
+      - 'src/modules/resilience/**'
+      - 'scripts/verify-dogfood-exit-gate.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+
+jobs:
+  verifier-contract:
+    name: Verify fail-closed gate contract
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - name: Exercise collector, gate, report, and CLI contracts
+        run: >-
+          pnpm exec vitest run
+          src/modules/dogfood/activity-store.test.ts
+          src/modules/dogfood/approved-review-source.test.ts
+          src/modules/dogfood/local-latency-evidence.test.ts
+          src/modules/dogfood/messages.test.ts
+          src/modules/dogfood/exit-gate.test.ts
+          src/modules/dogfood/release-report.test.ts
+          --reporter=verbose
+
+  release-evidence:
+    name: Verify candidate release evidence
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - name: Download private draft evidence bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_RELEASE_TAG: ${{ inputs.evidence_release_tag }}
+        run: gh release download "$EVIDENCE_RELEASE_TAG" --dir .dogfood-results
+      - name: Run fail-closed candidate gate
+        env:
+          DOGFOOD_CANDIDATE_COMMIT: ${{ github.sha }}
+        run: pnpm dogfood:verify .dogfood-results/manifest.json
+      - name: Upload the reviewable release evidence bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unpacked-dogfood-exit-gate-${{ github.run_id }}
+          path: .dogfood-results
+          if-no-files-found: error
+          include-hidden-files: true

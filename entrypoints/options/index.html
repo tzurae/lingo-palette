@@ -209,6 +209,31 @@
           <div id="portable-import-reports"></div>
         </div>
       </section>
+      <section aria-labelledby="dogfood-evidence-title">
+        <h2 id="dogfood-evidence-title">Unpacked dogfood evidence</h2>
+        <p>
+          Issue #19 的 release gate 必須來自至少 14 個日曆日的真實 Reading
+          Flows；自動化測試不能代替實際使用、manual NVDA 或 VoiceOver evidence。
+        </p>
+        <p class="warning">
+          Activity log 未加密。它不保存 Selection 或 Reading Context
+          文字，但會保存活動時間、Enabled Site origin、事件種類、record
+          identifiers、Pronunciation variety 與句數；匯出後請存放在受保護的位置。
+        </p>
+        <div class="backup-actions">
+          <button id="start-dogfood-collection" type="button">
+            開始／繼續收集
+          </button>
+          <button id="pause-dogfood-collection" type="button">
+            暫停收集
+          </button>
+          <button id="export-dogfood-activity" type="button">
+            選擇位置並匯出 activity JSON
+          </button>
+        </div>
+        <ul id="dogfood-activity-summary"></ul>
+        <p id="dogfood-activity-status" role="status" aria-live="polite"></p>
+      </section>
       <section aria-labelledby="sites-title">
         <h2 id="sites-title">已啟用的網站</h2>
         <p>只有你個別啟用的網站可以顯示選取工具。</p>
