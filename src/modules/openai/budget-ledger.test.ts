@@ -240,7 +240,7 @@ describe('daily provider budget ledger', () => {
     });
   });
 
-  it('sweeps reservations left by a replaced service worker', async () => {
+  it('charges reservations left by a replaced service worker at their bounded upper limit', async () => {
     const storage = memoryStorage();
     const firstWorker = createBudgetLedger(storage, {
       now: () => new Date('2026-08-13T10:00:00'),
@@ -255,12 +255,51 @@ describe('daily provider budget ledger', () => {
       ownerId: 'worker-after-restart',
     });
     await expect(replacementWorker.snapshot()).resolves.toMatchObject({
-      used: { totalTokens: 0 },
+      used: { totalTokens: 90_000, estimatedCostUsd: 0.9 },
       reserved: { tokens: 0, estimatedCostUsd: 0 },
     });
     await expect(
       replacementWorker.reserve({ tokens: 90_000, estimatedCostUsd: 0.9 }),
-    ).resolves.toMatchObject({ status: 'reserved' });
+    ).resolves.toMatchObject({ status: 'blocked', kind: 'token-budget' });
+  });
+
+  it('charges orphaned background reservations against both hard-limit scopes', async () => {
+    const storage = memoryStorage();
+    const firstWorker = createBudgetLedger(storage, {
+      now: () => new Date('2026-08-13T10:00:00'),
+      id: () => 'background-orphan',
+      ownerId: 'background-worker-before-restart',
+    });
+    await firstWorker.reserve({
+      scope: 'background',
+      tokens: 30_000,
+      estimatedCostUsd: 0.3,
+    });
+
+    const replacementWorker = createBudgetLedger(storage, {
+      now: () => new Date('2026-08-13T10:01:00'),
+      id: () => 'background-replacement',
+      ownerId: 'background-worker-after-restart',
+    });
+    await expect(replacementWorker.snapshot()).resolves.toMatchObject({
+      used: { totalTokens: 30_000, estimatedCostUsd: 0.3 },
+      reserved: { tokens: 0, estimatedCostUsd: 0 },
+      background: {
+        used: { totalTokens: 30_000, estimatedCostUsd: 0.3 },
+        reserved: { tokens: 0, estimatedCostUsd: 0 },
+      },
+    });
+    await expect(
+      replacementWorker.reserve({
+        scope: 'background',
+        tokens: 1,
+        estimatedCostUsd: 0.001,
+      }),
+    ).resolves.toEqual({
+      status: 'blocked',
+      kind: 'token-budget',
+      scope: 'background',
+    });
   });
 
   it('caps background reservations at 30% while preserving foreground capacity', async () => {

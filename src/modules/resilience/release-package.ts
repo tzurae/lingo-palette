@@ -28,11 +28,9 @@ type ExtensionManifest = {
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const executablePath = /\.(?:html?|m?js)$/i;
 const inspectableTextPath = /\.(?:css|html?|json|m?js|txt)$/i;
-const broadRequiredHostPermissions = new Set([
-  '<all_urls>',
-  '*://*/*',
-  'http://*/*',
-  'https://*/*',
+const requiredHostPermissions = new Set([
+  'https://api.openai.com/*',
+  'https://tzurae.github.io/lingo-palette-evidence/*',
 ]);
 const requiredNoticeFragments = [
   '@noble/ed25519 3.1.0',
@@ -89,9 +87,12 @@ function inspectRemoteLogic(
 ): ReleasePackageCheck {
   const failures: string[] = [];
   const remoteExecutionPatterns = [
-    /<script\b[^>]*\bsrc\s*=\s*["']https?:\/\//i,
-    /\bimport\s*\(\s*["'`]https?:\/\//i,
-    /\bfrom\s*["'`]https?:\/\//i,
+    /<script\b[^>]*\bsrc\s*=\s*["'](?:https?:)?\/\//i,
+    /\bimport\s*\(\s*["'`](?:https?:)?\/\//i,
+    /\bfrom\s*["'`](?:https?:)?\/\//i,
+    /\bimportScripts\s*\(\s*["'`](?:https?:)?\/\//i,
+    /\bnew\s+(?:Shared)?Worker\s*\(\s*["'`](?:https?:)?\/\//i,
+    /\b(?:register|addModule)\s*\(\s*["'`](?:https?:)?\/\//i,
     /\beval\s*\(/,
     /\bnew\s+Function\s*\(/,
   ] as const;
@@ -117,7 +118,7 @@ function inspectRemoteLogic(
       : null;
   if (
     typeof extensionPages === 'string' &&
-    /script-src[^;]*https?:\/\//i.test(extensionPages)
+    /script-src[^;]*(?:https?:|\/\/|\*)/i.test(extensionPages)
   ) {
     failures.push('Extension CSP permits a remote script origin.');
   }
@@ -141,16 +142,21 @@ function inspectRequiredHosts(
     for (const permission of manifest.host_permissions) {
       if (
         typeof permission !== 'string' ||
-        broadRequiredHostPermissions.has(permission)
+        !requiredHostPermissions.has(permission)
       ) {
-        failures.push(`Required host permission is broad or malformed: ${String(permission)}.`);
+        failures.push(`Required host permission is not allowlisted: ${String(permission)}.`);
+      }
+    }
+    for (const required of requiredHostPermissions) {
+      if (!manifest.host_permissions.includes(required)) {
+        failures.push(`Required host permission is missing: ${required}.`);
       }
     }
   }
   return check(
     'required-host-permissions-are-narrow',
     failures,
-    'Required host permissions contain no broad website match pattern.',
+    'Required host permissions exactly match the OpenAI API and pinned Evidence Pack origins.',
   );
 }
 

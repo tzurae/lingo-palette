@@ -433,7 +433,12 @@ export const RESILIENCE_MATRIX: readonly ResilienceMatrixRow[] = [
       regression(
         'worker-reservation-sweep',
         budgetTests,
-        'sweeps reservations left by a replaced service worker',
+        'charges reservations left by a replaced service worker at their bounded upper limit',
+      ),
+      regression(
+        'worker-background-reservation-sweep',
+        budgetTests,
+        'charges orphaned background reservations against both hard-limit scopes',
       ),
     ],
   }),

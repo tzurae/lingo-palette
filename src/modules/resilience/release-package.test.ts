@@ -88,6 +88,14 @@ describe('release package inspection', () => {
       },
     },
     {
+      id: 'no-remote-executable-logic',
+      entries: {
+        'background.js': strToU8(
+          "importScripts('https://cdn.example.test/worker.js')",
+        ),
+      },
+    },
+    {
       id: 'required-host-permissions-are-narrow',
       entries: {
         'manifest.json': strToU8(
@@ -96,6 +104,22 @@ describe('release package inspection', () => {
             background: { service_worker: 'background.js' },
             permissions: ['downloads'],
             host_permissions: ['https://*/*'],
+          }),
+        ),
+      },
+    },
+    {
+      id: 'required-host-permissions-are-narrow',
+      entries: {
+        'manifest.json': strToU8(
+          JSON.stringify({
+            manifest_version: 3,
+            background: { service_worker: 'background.js' },
+            permissions: ['downloads'],
+            host_permissions: [
+              'https://api.openai.com/*',
+              'https://example.test/*',
+            ],
           }),
         ),
       },
