@@ -149,7 +149,7 @@ function startReadingFlow(): void {
     const measuredHost = host;
     if (measuredHost === null) return;
     const measurementVersion = ++visibilityMeasurementVersion;
-    requestAnimationFrame((visibleAt) => {
+    requestAnimationFrame(() => {
       if (
         host !== measuredHost ||
         measurementVersion !== visibilityMeasurementVersion
@@ -157,7 +157,7 @@ function startReadingFlow(): void {
         return;
       }
       measuredHost.dataset.selectionStableAt = String(selectionStableAt);
-      measuredHost.dataset.visibleAt = String(visibleAt);
+      measuredHost.dataset.visibleAt = String(performance.now());
     });
   }
 

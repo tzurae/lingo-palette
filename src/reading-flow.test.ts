@@ -996,7 +996,7 @@ describe('unpacked extension Reading Flow', () => {
         ?.shortcut;
     });
     expect(shortcut).toBe(
-      process.platform === 'darwin' ? 'Command+Shift+L' : 'Ctrl+Shift+Y',
+      process.platform === 'darwin' ? '⇧⌘L' : 'Ctrl+Shift+Y',
     );
     const activeTabId = await activeReadingTabId();
     await worker.evaluate(async (tabId) => {
@@ -4080,7 +4080,7 @@ describe('unpacked extension Reading Flow', () => {
 
       const shortcut = await configuredToolbarShortcut();
       expect(shortcut).toBe(
-        process.platform === 'darwin' ? 'Command+Shift+L' : 'Ctrl+Shift+Y',
+        process.platform === 'darwin' ? '⇧⌘L' : 'Ctrl+Shift+Y',
       );
       await worker.evaluate(async (activeTabId) => {
         await chrome.scripting.executeScript({
