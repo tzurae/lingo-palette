@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { ProviderUsage } from './budget-ledger';
 import type { OpenAiConfiguration } from './configuration-store';
 import type { QuickHintResult } from '../reading-flow/quick-hint';
+import { estimateOpenAiCost } from './pricing';
+import { QUICK_HINT_MAXIMUM_OUTPUT_TOKENS } from './openai-responses';
 import {
   AssistanceFailure,
   createQuickHintExecutor,
@@ -208,6 +210,17 @@ describe('Quick Hint assistance executor', () => {
       quickHintTokenReservation(worstCaseRequest),
     );
     expect(reservation?.tokens).toBeGreaterThan(8_192);
+    expect(reservation?.estimatedCostUsd).toBe(
+      estimateOpenAiCost(configuration.model.id, {
+        inputTokens:
+          quickHintTokenReservation(worstCaseRequest) -
+          QUICK_HINT_MAXIMUM_OUTPUT_TOKENS,
+        cachedInputTokens: 0,
+        outputTokens: QUICK_HINT_MAXIMUM_OUTPUT_TOKENS,
+        reasoningTokens: QUICK_HINT_MAXIMUM_OUTPUT_TOKENS,
+        totalTokens: quickHintTokenReservation(worstCaseRequest),
+      }),
+    );
   });
 
   it('returns a paid provider result when best-effort cache persistence fails', async () => {

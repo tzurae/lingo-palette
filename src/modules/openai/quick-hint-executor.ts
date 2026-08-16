@@ -1,5 +1,8 @@
 import type { OpenAiConfiguration } from './configuration-store';
-import { quickHintProviderTokenUpperBound } from './openai-responses';
+import {
+  QUICK_HINT_MAXIMUM_OUTPUT_TOKENS,
+  quickHintProviderTokenUpperBound,
+} from './openai-responses';
 import type { QuickHintResult } from '../reading-flow/quick-hint';
 import type { Selection } from '../reading-flow/selection';
 import {
@@ -15,7 +18,6 @@ export {
 } from './assistance-executor';
 
 const quickHintContractVersion = 'quick-hint-v1';
-const maximumOutputTokensPerAttempt = 256;
 
 export type QuickHintExecutionInput = {
   apiKey: string;
@@ -52,7 +54,7 @@ export function createQuickHintExecutor(
   return createAssistanceExecutor(
     {
       actionLabel: 'Quick Hint',
-      maximumOutputTokensPerAttempt,
+      maximumOutputTokensPerAttempt: QUICK_HINT_MAXIMUM_OUTPUT_TOKENS,
       cacheKey: quickHintCacheKey,
       tokenReservation: quickHintTokenReservation,
     },
