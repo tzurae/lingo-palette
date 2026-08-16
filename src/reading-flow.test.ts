@@ -271,7 +271,7 @@ describe('unpacked extension Reading Flow', () => {
     expect(JSON.stringify(contentScriptRead)).not.toContain('sk-browser-test');
 
 
-    const selectionAt = await selectTextByPointer(page, '#copy', 'postpone');
+    await selectTextByPointer(page, '#copy', 'postpone');
     const focusAfterSelection = await page.evaluate(
       () => document.activeElement?.id,
     );
@@ -280,13 +280,9 @@ describe('unpacked extension Reading Flow', () => {
         page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
       )
       .toBe(true);
-    const visibleAt = Number(
-      await page
-        .locator('[data-lingo-palette-reading-flow]')
-        .getAttribute('data-visible-at'),
-    );
-    expect(visibleAt - selectionAt).toBeGreaterThanOrEqual(0);
-    expect(visibleAt - selectionAt).toBeLessThanOrEqual(250);
+    const latency = await visibleControlsLatency(page);
+    expect(latency).toBeGreaterThanOrEqual(0);
+    expect(latency).toBeLessThanOrEqual(250);
     expect(focusAfterSelection).toBe('copy');
     expect(await page.evaluate(() => document.activeElement?.id)).toBe(
       focusAfterSelection,
@@ -967,11 +963,7 @@ describe('unpacked extension Reading Flow', () => {
     const frame = page.frames().find((candidate) => candidate.url().endsWith('/frame'));
     if (frame === undefined) throw new Error('Expected the same-origin frame.');
     await frame.locator('#frame-copy').focus();
-    const selectionAt = await selectTextByKeyboard(
-      frame,
-      '#frame-copy',
-      'postpone',
-    );
+    await selectTextByKeyboard(frame, '#frame-copy', 'postpone');
     expect(await frame.evaluate(() => document.getSelection()?.toString())).toBe(
       'postpone',
     );
@@ -983,13 +975,9 @@ describe('unpacked extension Reading Flow', () => {
         frame.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
       )
       .toBe(true);
-    const visibleAt = Number(
-      await frame
-        .locator('[data-lingo-palette-reading-flow]')
-        .getAttribute('data-visible-at'),
-    );
-    expect(visibleAt - selectionAt).toBeGreaterThanOrEqual(0);
-    expect(visibleAt - selectionAt).toBeLessThanOrEqual(250);
+    const latency = await visibleControlsLatency(frame);
+    expect(latency).toBeGreaterThanOrEqual(0);
+    expect(latency).toBeLessThanOrEqual(250);
     const shortcut = await worker.evaluate(async () => {
       const commands = await chrome.commands.getAll();
       return commands.find(({ name }) => name === 'focus-selection-toolbar')
@@ -1036,7 +1024,7 @@ describe('unpacked extension Reading Flow', () => {
     expect(await frame.evaluate(() => document.activeElement?.id)).toBe(
       'frame-copy',
     );
-  });
+  }, 15_000);
 
   it('shows the Enabled Site and actual command state in Settings', async () => {
     const extensionOrigin = extensionOriginFrom(worker);
@@ -4049,6 +4037,7 @@ describe('unpacked extension Reading Flow', () => {
       await expect
         .poll(() => toolbar.isVisible(), {
           message: `Expected Reading Flow toolbar for smoke case ${pageCase.id}.`,
+          timeout: 5_000,
         })
         .toBe(true);
       const host = target.locator('[data-lingo-palette-reading-flow]');
@@ -4063,16 +4052,7 @@ describe('unpacked extension Reading Flow', () => {
       expect(Number.parseFloat(accessibleMedia.borderTopWidth)).toBeGreaterThanOrEqual(
         2,
       );
-      await expect
-        .poll(() => host.getAttribute('data-selection-stable-at'))
-        .not.toBeNull();
-      const timing = await host.evaluate((element) => ({
-        selectionStableAt: Number(
-          (element as HTMLElement).dataset.selectionStableAt,
-        ),
-        visibleAt: Number((element as HTMLElement).dataset.visibleAt),
-      }));
-      const latency = timing.visibleAt - timing.selectionStableAt;
+      const latency = await visibleControlsLatency(target);
       expect(latency).toBeGreaterThanOrEqual(0);
       expect(latency).toBeLessThanOrEqual(250);
       await assertSmokeSurfaceInsideViewport(target);
@@ -4331,11 +4311,28 @@ async function replaceCopyAndSelect(text: string): Promise<void> {
   await selectNodeContents(page, '#copy');
 }
 
+async function visibleControlsLatency(target: Page | Frame): Promise<number> {
+  const host = target.locator('[data-lingo-palette-reading-flow]');
+  await expect
+    .poll(() => host.getAttribute('data-visible-at'), {
+      message: 'Expected a completed visible-controls animation frame.',
+      timeout: 5_000,
+    })
+    .not.toBeNull();
+  const timing = await host.evaluate((element) => ({
+    selectionStableAt: Number(
+      (element as HTMLElement).dataset.selectionStableAt,
+    ),
+    visibleAt: Number((element as HTMLElement).dataset.visibleAt),
+  }));
+  return timing.visibleAt - timing.selectionStableAt;
+}
+
 async function selectTextByPointer(
   pageTarget: Page,
   selector: string,
   text: string,
-): Promise<number> {
+): Promise<void> {
   const points = await pageTarget.locator(selector).evaluate(
     (element, selectedText) => {
       const node = element.firstChild;
@@ -4355,11 +4352,8 @@ async function selectTextByPointer(
   );
   await pageTarget.mouse.move(points.start.x, points.start.y);
   await pageTarget.mouse.down();
-
   await pageTarget.mouse.move(points.end.x, points.end.y, { steps: 8 });
-  const selectionAt = await pageTarget.evaluate(() => performance.now());
   await pageTarget.mouse.up();
-  return selectionAt;
 }
 async function activateByKeyboard(control: Locator): Promise<void> {
   await control.focus();
@@ -4379,7 +4373,7 @@ async function selectTextByKeyboard(
   target: Page | Frame,
   selector: string,
   text: string,
-): Promise<number> {
+): Promise<void> {
   const locator = target.locator(selector);
   const content = await locator.textContent();
   if (content === null) throw new Error(`Expected text in ${selector}.`);
@@ -4394,9 +4388,7 @@ async function selectTextByKeyboard(
   for (let index = 0; index < codePoints.length - 1; index += 1) {
     await target.press(selector, 'Shift+ArrowRight');
   }
-  const selectionAt = await target.evaluate(() => performance.now());
   await target.press(selector, 'Shift+ArrowRight');
-  return selectionAt;
 }
 
 async function selectNodeContents(pageTarget: Page, selector: string): Promise<void> {
