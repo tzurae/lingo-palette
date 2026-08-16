@@ -215,6 +215,7 @@ const controlledResponseQueueSchema = z.array(
   z.object({
     status: z.number().int(),
     body: z.unknown(),
+    requestKind: z.enum(['quick_hint', 'deep_dive', 'speech']).optional(),
     delayMs: z.number().int().nonnegative().optional(),
     headers: z.record(z.string(), z.string()).optional(),
   }),
@@ -225,9 +226,10 @@ const controlledRequestSchema = z.object({
 const controlledSpeechRequestSchema = z.object({
   stream_format: z.literal('sse'),
 });
-const openAiResponsesClient = createOpenAiResponsesClient(
-  import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,
-);
+const openAiResponsesClient =
+  import.meta.env.WXT_TEST_BROWSER === 'true'
+    ? createOpenAiResponsesClient(controlledOpenAiFetch)
+    : createOpenAiResponsesClient();
 const reviewReuseHarness = createReviewGenerationHarness({
   evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK,
   evaluator: {
@@ -2168,10 +2170,19 @@ async function controlledOpenAiFetch(
     stored.openAiTestResponses,
   );
   const queue = parsedQueue.success ? parsedQueue.data : [];
-  const next = queue[0];
+  const requestKind = speechRequest.success
+    ? 'speech'
+    : request?.text.format.name;
+  const nextIndex = queue.findIndex(
+    (candidate) =>
+      candidate.requestKind === undefined ||
+      candidate.requestKind === requestKind,
+  );
+  const next = nextIndex === -1 ? undefined : queue[nextIndex];
   await browser.storage.local.set({
     openAiTestRequests: [...priorRequests, rawRequest],
-    openAiTestResponses: queue.slice(1),
+    openAiTestResponses:
+      nextIndex === -1 ? queue : queue.toSpliced(nextIndex, 1),
   });
   if (next !== undefined) {
     if (next.delayMs !== undefined) {
