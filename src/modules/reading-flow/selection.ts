@@ -8,6 +8,8 @@ export type Selection = {
 
 export const SELECTION_LIMIT = 4_000;
 export const CONTEXT_LIMIT = 2_000;
+const excludedSelectionSurfaceSelector =
+  'form, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]';
 
 export type SelectionSnapshot = {
   selection: Selection;
@@ -28,6 +30,7 @@ export function captureSelection(
   }
 
   const range = browserSelection.getRangeAt(0).cloneRange();
+  if (intersectsExcludedSelectionSurface(range)) return null;
   const text = browserSelection.toString();
   if (text.length === 0) return null;
 
@@ -46,6 +49,23 @@ export function captureSelection(
     codePointLength: selectedLength,
     range,
   };
+}
+
+function intersectsExcludedSelectionSurface(range: Range): boolean {
+  const commonElement =
+    range.commonAncestorContainer instanceof Element
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer.parentElement;
+  if (commonElement === null) return true;
+  if (commonElement.closest(excludedSelectionSurfaceSelector) !== null) {
+    return true;
+  }
+  for (const excluded of commonElement.querySelectorAll(
+    excludedSelectionSurfaceSelector,
+  )) {
+    if (range.intersectsNode(excluded)) return true;
+  }
+  return false;
 }
 
 export function codePointLength(value: string): number {

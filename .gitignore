@@ -6,6 +6,7 @@ test-results/
 .evidence-pack-cache/
 .evidence-pack-dist/
 playwright-report/
+.smoke-results/
 *.log
 
 .idea/
