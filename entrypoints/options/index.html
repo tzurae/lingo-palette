@@ -171,6 +171,44 @@
           aria-live="polite"
         ></p>
       </section>
+      <section aria-labelledby="portable-backup-title">
+        <h2 id="portable-backup-title">Portable backup</h2>
+        <p>
+          匯出完整、可檢查的 UTF-8 JSON learning state；API key、authentication、usage
+          ledger、cache、background jobs 與 Evidence Pack binaries 永不匯出。
+        </p>
+        <p id="portable-backup-warning" class="warning">
+          備份未加密。Selection、Reading Context、Learner Notes 與 Review history
+          可能包含敏感內容；請自行選擇受保護的儲存位置。
+        </p>
+        <div class="backup-actions">
+          <button id="export-portable-backup" type="button">
+            選擇位置並匯出備份
+          </button>
+          <label class="file-button" for="import-portable-backup-file">
+            選擇備份並檢查
+          </label>
+          <input
+            id="import-portable-backup-file"
+            type="file"
+            accept="application/json,.json"
+          />
+        </div>
+        <div id="portable-import-preview" class="disclosure" hidden>
+          <h3>提交前 Import Report</h3>
+          <p id="portable-import-source"></p>
+          <ul id="portable-import-counts"></ul>
+          <div id="portable-import-collisions"></div>
+          <button id="confirm-portable-import" type="button">
+            確認原子提交
+          </button>
+        </div>
+        <p id="portable-backup-status" role="status" aria-live="polite"></p>
+        <div>
+          <h3>已提交的 Import Reports</h3>
+          <div id="portable-import-reports"></div>
+        </div>
+      </section>
       <section aria-labelledby="sites-title">
         <h2 id="sites-title">已啟用的網站</h2>
         <p>只有你個別啟用的網站可以顯示選取工具。</p>

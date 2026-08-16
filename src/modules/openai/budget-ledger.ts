@@ -9,10 +9,12 @@ export const DEFAULT_DAILY_BUDGET: DailyBudget = {
   estimatedCostUsdLimit: 1,
 };
 
-const dailyBudgetSchema = z.object({
-  tokenLimit: z.number().int().nonnegative(),
-  estimatedCostUsdLimit: z.number().nonnegative(),
-});
+const dailyBudgetSchema = z
+  .object({
+    tokenLimit: z.number().int().nonnegative(),
+    estimatedCostUsdLimit: z.number().nonnegative(),
+  })
+  .strict();
 const usageSchema = z.object({
   inputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),

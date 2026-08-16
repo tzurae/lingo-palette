@@ -96,14 +96,146 @@ const compatibleTaskSchema = z
       partialAnswers: [],
     };
   });
-const reviewProvenanceEvidenceSchema = z
+const evidenceHashSchema = z.string().min(1);
+const reviewProvenanceEvidenceSchema = z.discriminatedUnion('authority', [
+  z
+    .object({
+      id: z.string().min(1),
+      sourceId: z.string().min(1),
+      sourceVersion: z.string().min(1),
+      sourceSenseId: z.string().min(1),
+      partOfSpeech: z.string().min(1),
+      definition: z.string().min(1),
+      members: z.array(z.string()),
+      examples: z.array(z.string()),
+      authority: z.enum(['primary-lexical', 'supplemental']),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().min(1),
+      sourceId: z.string().min(1),
+      sourceVersion: z.string().min(1),
+      sourceSenseId: z.string().min(1),
+      partOfSpeech: z.string().min(1),
+      morphology: z.string().min(1),
+      contextQuote: z.string().min(1),
+      fit: z.enum(['fits', 'does-not-fit']),
+      attestation: z.string().min(1),
+      authority: z.enum(['sense-context', 'lexical-relation', 'frequency']),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().min(1),
+      sourceId: z.string().min(1),
+      sourceVersion: z.string().min(1),
+      sourceSenseId: z.string().min(1),
+      partOfSpeech: z.string().min(1),
+      morphologies: z.array(z.string().min(1)),
+      pattern: z.string().min(1),
+      attestation: z.string().min(1),
+      authority: z.enum([
+        'source-recorded-frame',
+        'source-recorded-usage-note',
+        'pos-aware-corpus-attestation',
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().min(1),
+      sourceId: z.string().min(1),
+      sourceVersion: z.string().min(1),
+      authority: z.literal('corpus-collocation'),
+      targetExpression: z.string().min(1),
+      collocate: z.string().min(1),
+      partOfSpeech: z.string().min(1),
+      targetMorphologies: z.array(z.string().min(1)),
+      window: z.object({ type: z.literal('same-sentence') }).strict(),
+      rawCount: z.number().int().nonnegative(),
+      association: z
+        .object({
+          metric: z.literal('log-likelihood'),
+          value: z.number().nonnegative(),
+        })
+        .strict(),
+      minimumRawCount: z.number().int().positive(),
+      corpus: z
+        .object({
+          name: z.string().min(1),
+          language: z.literal('en'),
+          sentenceCount: z.number().int().positive(),
+          tokenCount: z.number().int().positive(),
+          sourceUrl: z.url(),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+const evidencePackManifestSchema = z
   .object({
     id: z.string().min(1),
-    sourceId: z.string().min(1),
-    sourceVersion: z.string().min(1),
-    authority: z.string().min(1),
+    schemaVersion: z.literal(1),
+    version: z.string().min(1),
+    language: z.literal('en'),
+    minimumExtensionVersion: z.string().min(1),
+    compression: z.literal('gzip'),
+    compressedSizeBytes: z.number().int().positive(),
+    installedSizeBytes: z.number().int().positive(),
+    contentIdentitySha256: evidenceHashSchema,
+    contentHashes: z.array(
+      z
+        .object({
+          path: z.string().min(1),
+          byteSize: z.number().int().nonnegative(),
+          sha256: evidenceHashSchema,
+        })
+        .strict(),
+    ),
+    licenses: z.array(
+      z
+        .object({
+          id: z.string().min(1),
+          path: z.string().min(1),
+          byteSize: z.number().int().nonnegative(),
+          sha256: evidenceHashSchema,
+        })
+        .strict(),
+    ),
+    sources: z.array(
+      z
+        .object({
+          id: z.string().min(1),
+          version: z.string().min(1),
+          asset: z.string().min(1),
+          sha256: evidenceHashSchema,
+          licenseIds: z.array(z.string().min(1)),
+        })
+        .strict(),
+    ),
   })
-  .passthrough();
+  .strict();
+const licenseAndAttributionSchema = z
+  .object({
+    sourceId: z.string().min(1),
+    sourceName: z.string().min(1),
+    sourceVersion: z.string().min(1),
+    attribution: z.string().min(1),
+    licenseIdentifiers: z.array(z.string().min(1)),
+    licenseTextHashes: z.array(
+      z
+        .object({
+          licenseIdentifier: z.string().min(1),
+          sha256: evidenceHashSchema,
+        })
+        .strict(),
+    ),
+    notice: z.string().min(1),
+    licenseUrls: z.array(z.url()),
+    sourceUrl: z.url(),
+  })
+  .strict();
 const approvedReviewItemSchema = z
   .object({
     version: z.literal(1),
@@ -114,15 +246,27 @@ const approvedReviewItemSchema = z
     provenance: z
       .object({
         approvedAt: z.iso.datetime(),
-        evidencePack: z
-          .object({ version: z.string().min(1) })
-          .passthrough(),
+        generation: z
+          .object({
+            model: z.string().min(1),
+            promptVersion: z.string().min(1),
+          })
+          .strict(),
+        validatorVersion: z.string().min(1),
+        evidencePack: evidencePackManifestSchema,
+        relevantEvidence: z.array(reviewProvenanceEvidenceSchema),
         sourceAuthority: reviewSourceAuthoritySchema.optional(),
-        relevantEvidence: z.array(reviewProvenanceEvidenceSchema).optional(),
+        licenseAndAttribution: z.array(licenseAndAttributionSchema),
+        validation: z
+          .object({
+            outcome: z.enum(['approved', 'safe-fallback']),
+            reasons: z.array(z.string()),
+          })
+          .strict(),
       })
-      .passthrough(),
+      .strict(),
   })
-  .passthrough()
+  .strict()
   .superRefine((item, context) => {
     const hasProductiveTask = item.task.type === 'productive';
     if (
@@ -255,7 +399,52 @@ const sessionSchema = z
     currentIndex: z.number().int().nonnegative(),
     revealedReviewItemIds: z.array(z.string().min(1)),
   })
-  .strict();
+  .strict()
+  .superRefine((session, context) => {
+    const reviewItemIds = new Set<string>();
+    for (const [index, reviewItemId] of session.reviewItemIds.entries()) {
+      if (reviewItemIds.has(reviewItemId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['reviewItemIds', index],
+          message: `Duplicate Review Item ID ${reviewItemId}.`,
+        });
+      }
+      reviewItemIds.add(reviewItemId);
+    }
+    const revealedIds = new Set<string>();
+    for (const [index, reviewItemId] of session.revealedReviewItemIds.entries()) {
+      if (
+        revealedIds.has(reviewItemId) ||
+        !reviewItemIds.has(reviewItemId)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['revealedReviewItemIds', index],
+          message:
+            'Revealed Review Item IDs must be unique members of the session.',
+        });
+      }
+      revealedIds.add(reviewItemId);
+    }
+    if (session.currentIndex >= session.reviewItemIds.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['currentIndex'],
+        message: 'Review Session currentIndex must identify a session item.',
+      });
+    }
+    if (
+      (session.status === 'active' && session.completedAt !== null) ||
+      (session.status === 'completed' && session.completedAt === null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['completedAt'],
+        message: 'Review Session status and completedAt must agree.',
+      });
+    }
+  });
 const sessionStateSchema = z
   .object({
     version: z.literal(1),
@@ -294,6 +483,19 @@ const answerInputSchema = z
 export type ReviewSchedule = z.infer<typeof scheduleSchema>;
 export type ReviewSessionRecord = z.infer<typeof sessionSchema>;
 export type RecordedReviewEvidence = z.infer<typeof recordedEvidenceSchema>;
+
+const portableReviewStateSchema = z
+  .object({
+    approvedItems: approvedStateSchema,
+    evidence: evidenceStateSchema,
+    schedules: scheduleStateSchema,
+    sessions: sessionStateSchema,
+  })
+  .strict();
+
+export function parsePortableReviewState(value: unknown) {
+  return portableReviewStateSchema.parse(value);
+}
 export type ReviewSessionStorage = {
   get(key: string): Promise<Record<string, unknown>>;
   set(items: Record<string, unknown>): Promise<void>;
