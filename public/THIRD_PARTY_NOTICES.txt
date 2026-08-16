@@ -1,0 +1,65 @@
+Lingo Palette third-party notices
+=================================
+
+This file covers third-party runtime software and bundled language evidence in
+the packaged browser extension. Development-only tooling is not distributed in
+the extension package.
+
+Runtime software
+----------------
+
+@noble/ed25519 3.1.0
+Copyright (c) 2019 Paul Miller (https://paulmillr.com)
+License: MIT
+Homepage: https://paulmillr.com/noble/
+
+react 19.2.8
+react-dom 19.2.8
+scheduler 0.27.0
+Copyright (c) Meta Platforms, Inc. and affiliates.
+License: MIT
+Homepage: https://react.dev/
+
+zod 4.4.3
+Copyright (c) 2025 Colin McDonnell
+License: MIT
+Homepage: https://zod.dev/
+
+MIT License text applying to the runtime packages above
+-------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Bundled language evidence
+-------------------------
+
+Open English WordNet 2025
+- Attribution: Open English WordNet contributors and Princeton University.
+- Licenses: Creative Commons Attribution 4.0 International and the Princeton
+  WordNet License.
+- Source: https://github.com/globalwordnet/english-wordnet
+
+Leipzig Corpora Collection, English News 2023 100K
+- Attribution: Leipzig Corpora Collection.
+- License: Creative Commons Attribution 4.0 International.
+- Source: https://wortschatz.uni-leipzig.de/
+
+The exact source versions, content hashes, attribution records, and complete
+license texts are part of the bundled, versioned Evidence Pack. Installed
+Evidence Packs expose the same signed license inventory for inspection.

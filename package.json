@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "evidence:build": "node --experimental-strip-types scripts/build-english-evidence-pack.mjs",
+    "resilience:verify": "vitest run --reporter=json --outputFile=.resilience-results/vitest.json && wxt zip && node --experimental-strip-types scripts/verify-resilience-matrix.ts",
     "smoke:verify": "node --experimental-strip-types scripts/verify-smoke-evidence.ts",
     "postinstall": "wxt prepare"
   },
