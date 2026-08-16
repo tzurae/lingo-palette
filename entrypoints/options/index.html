@@ -14,6 +14,11 @@
           設定只會在你明確儲存後啟用。API key 只存於此擴充功能的裝置本機儲存空間，不會同步或匯出。
         </p>
         <p class="warning">
+          在 Enabled Site 完成 Selection 後，Quick Hint 會自動處理選取內容。若本機快取未命中，才會將 Selection
+          與相鄰 Reading Context 傳送到你設定的 OpenAI Responses API，並使用你的 provider
+          budget；改選其他內容，或開始 Deep Dive／Pronunciation，會取消尚未完成的 Quick Hint。
+        </p>
+        <p class="warning">
           瀏覽器、裝置、Chrome profile 或擴充功能套件的控制者仍可擷取 API key，並可能造成未授權的 OpenAI 費用。若懷疑外洩，請立即在 OpenAI 撤銷並輪替 key。
         </p>
         <form id="openai-form">

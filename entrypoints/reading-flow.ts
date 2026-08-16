@@ -27,6 +27,10 @@ const hostAttribute = 'data-lingo-palette-reading-flow';
 const initializedAttribute = 'data-lingo-palette-reading-flow-initialized';
 const focusEvent = 'lingo-palette:focus-selection-toolbar';
 const viewportGap = 8;
+const annotationHostAttribute =
+  'data-lingo-palette-quick-hint-annotation';
+const annotationGap = 2;
+const automaticQuickHintDelayMs = 1_000;
 
 export default defineUnlistedScript(() => {
   if (!isSupportedReadingDocument(window)) return;
@@ -60,6 +64,9 @@ function startReadingFlow(): void {
   let visibilityMeasurementVersion = 0;
   let quickHintRequestVersion = 0;
   let quickHintBusy = false;
+  let annotationHost: HTMLElement | null = null;
+  let annotationShadow: ShadowRoot | null = null;
+  let automaticQuickHintTimer: number | null = null;
   const pronunciationPlayback = createBrowserPronunciationPlayback();
   let pronunciationState = pronunciationPlayback.getState();
   pronunciationPlayback.subscribe((state) => {
@@ -135,7 +142,7 @@ function startReadingFlow(): void {
   ): void {
     const nextSnapshot = captureSelection(document, document.getSelection());
     if (nextSnapshot === null) {
-      if (focusControls) setStatus('請先選取要理解的英文內容。');
+      if (snapshot !== null) closeSurface(false);
       return;
     }
 
@@ -159,6 +166,13 @@ function startReadingFlow(): void {
     renderControls();
     placeSurface();
     recordVisibleControlsFrame(selectionStableAt);
+    if (
+      recordActivity &&
+      enabled &&
+      nextSnapshot.codePointLength <= SELECTION_LIMIT
+    ) {
+      scheduleAutomaticQuickHint();
+    }
     if (focusControls) {
       firstInteractiveElement()?.focus({ preventScroll: true });
     }
@@ -207,6 +221,19 @@ function startReadingFlow(): void {
     host.style.zIndex = '2147483647';
     host.style.maxWidth = 'min(360px, calc(100vw - 16px))';
     host.style.colorScheme = 'light';
+    host.addEventListener(
+      'pointerdown',
+      (event) => {
+        if (
+          event
+            .composedPath()
+            .some((target) => target instanceof HTMLButtonElement)
+        ) {
+          cancelScheduledQuickHint();
+        }
+      },
+      true,
+    );
     shadow = host.attachShadow({ mode: 'open' });
     shadow.append(createStyles(), document.createElement('section'));
     document.documentElement.append(host);
@@ -246,6 +273,11 @@ function startReadingFlow(): void {
       section.append(enableButton, liveRegion());
       return;
     }
+    const quickHintOutput = createElement('div', 'result');
+    quickHintOutput.dataset.result = '';
+    quickHintOutput.hidden = true;
+    section.append(quickHintOutput);
+
 
     const quickHint = createElement(
       'button',
@@ -342,6 +374,7 @@ function startReadingFlow(): void {
     variety: PronunciationVariety,
   ): Promise<void> {
     if (snapshot === null) return;
+    invalidateQuickHintRequest();
     const selectionText = snapshot.selection.text;
     await pronunciationPlayback.start(selectionText, variety);
     const completed = pronunciationPlayback.getState();
@@ -452,17 +485,22 @@ function startReadingFlow(): void {
     placeSurface();
     firstInteractiveElement()?.focus({ preventScroll: true });
     setStatus('已啟用目前網站。');
+    scheduleAutomaticQuickHint();
   }
 
   function invalidateQuickHintRequest(): void {
+    cancelScheduledQuickHint();
     quickHintRequestVersion += 1;
     if (quickHintBusy) {
       void browser.runtime.sendMessage({ type: 'cancel-quick-hint' });
     }
     quickHintBusy = false;
+    setBusy(false);
+    hideQuickHintAnnotation();
   }
 
   async function requestQuickHint(): Promise<void> {
+    cancelScheduledQuickHint();
     if (
       snapshot === null ||
       snapshot.codePointLength > SELECTION_LIMIT ||
@@ -475,6 +513,8 @@ function startReadingFlow(): void {
     quickHintBusy = true;
     setBusy(true);
     setStatus('正在產生快速提示…');
+    setQuickHintOutput('正在產生更簡單的說法…', null);
+    setQuickHintAnnotation('•••', true);
 
     let response: QuickHintResponse;
     try {
@@ -487,6 +527,8 @@ function startReadingFlow(): void {
         quickHintBusy = false;
         setBusy(false);
         setStatus('無法連線到 Lingo Palette。');
+        setQuickHintOutput('無法取得簡化版本', '無法連線到 Lingo Palette。');
+        hideQuickHintAnnotation();
       }
       return;
     }
@@ -501,26 +543,131 @@ function startReadingFlow(): void {
     setBusy(false);
     if (response.status === 'failed' || response.status === 'cancelled') {
       setStatus(response.message);
+      hideQuickHintAnnotation();
+      setQuickHintOutput(
+        response.status === 'failed' ? '無法取得簡化版本' : '快速提示已取消',
+        response.message,
+      );
       return;
     }
 
-    if (shadow === null) return;
-    const section = shadow.querySelector('section');
-    if (section === null) return;
-    section.querySelector('[data-result]')?.remove();
-    const result = createElement('div', 'result');
-    result.dataset.result = '';
-    result.append(
-      createElement('strong', undefined, response.result.simplerExpression),
-    );
-    if (response.result.explanationCue !== null) {
-      result.append(
-        createElement('span', undefined, response.result.explanationCue),
-      );
-    }
-    section.insertBefore(result, section.querySelector('[role="status"]'));
     setStatus(completedStatus(response));
+    setQuickHintAnnotation(response.result.simplerExpression);
+    setQuickHintOutput(
+      response.result.simplerExpression,
+      response.result.explanationCue,
+    );
+  }
+
+  function setQuickHintOutput(
+    primary: string,
+    secondary: string | null,
+  ): void {
+    const result = shadow?.querySelector<HTMLElement>('[data-result]');
+    if (result === null || result === undefined) return;
+    result.hidden = false;
+    result.replaceChildren(createElement('strong', undefined, primary));
+    if (secondary !== null) {
+      result.append(createElement('span', undefined, secondary));
+    }
     placeSurface();
+  }
+
+  function cancelScheduledQuickHint(): void {
+    if (automaticQuickHintTimer === null) return;
+    window.clearTimeout(automaticQuickHintTimer);
+    automaticQuickHintTimer = null;
+  }
+
+  function scheduleAutomaticQuickHint(): void {
+    cancelScheduledQuickHint();
+    const scheduledSnapshot = snapshot;
+    if (
+      scheduledSnapshot === null ||
+      scheduledSnapshot.codePointLength > SELECTION_LIMIT
+    ) {
+      return;
+    }
+    setQuickHintAnnotation('•••', true);
+    automaticQuickHintTimer = window.setTimeout(() => {
+      automaticQuickHintTimer = null;
+      if (snapshot !== scheduledSnapshot || quickHintBusy) return;
+      void requestQuickHint();
+    }, automaticQuickHintDelayMs);
+  }
+
+  function setQuickHintAnnotation(
+    primary: string,
+    pending = false,
+  ): void {
+    ensureQuickHintAnnotation();
+    const annotation =
+      annotationShadow?.querySelector<HTMLElement>('.annotation');
+    if (annotation === null || annotation === undefined) return;
+    annotation.toggleAttribute('data-pending', pending);
+    annotation.replaceChildren(createElement('strong', undefined, primary));
+    placeQuickHintAnnotation();
+  }
+
+  function ensureQuickHintAnnotation(): void {
+    if (annotationHost !== null) return;
+    annotationHost = document.createElement('div');
+    annotationHost.setAttribute(annotationHostAttribute, '');
+    annotationHost.setAttribute('aria-hidden', 'true');
+    annotationHost.style.position = 'fixed';
+    annotationHost.style.zIndex = '2147483647';
+    annotationHost.style.maxWidth = 'min(320px, calc(100vw - 16px))';
+    annotationHost.style.pointerEvents = 'none';
+    annotationHost.style.colorScheme = 'light';
+    annotationShadow = annotationHost.attachShadow({ mode: 'open' });
+    annotationShadow.append(
+      createAnnotationStyles(),
+      createElement('aside', 'annotation'),
+    );
+    document.documentElement.append(annotationHost);
+  }
+
+  function hideQuickHintAnnotation(): void {
+    annotationHost?.remove();
+    annotationHost = null;
+    annotationShadow = null;
+  }
+
+  function selectionAnchorRect(): DOMRect | null {
+    if (snapshot === null) return null;
+    const firstRect = Array.from(snapshot.range.getClientRects()).find(
+      (rect) => rect.width > 0 || rect.height > 0,
+    );
+    if (firstRect !== undefined) return firstRect;
+    const boundingRect = snapshot.range.getBoundingClientRect();
+    return boundingRect.width > 0 || boundingRect.height > 0
+      ? boundingRect
+      : null;
+  }
+
+  function placeQuickHintAnnotation(): void {
+    if (annotationHost === null) return;
+    const anchorRect = selectionAnchorRect();
+    if (anchorRect === null) return;
+    const annotationRect = annotationHost.getBoundingClientRect();
+    const maximumLeft = Math.max(
+      viewportGap,
+      window.innerWidth - annotationRect.width - viewportGap,
+    );
+    const preferredLeft =
+      anchorRect.left + anchorRect.width / 2 - annotationRect.width / 2;
+    const left = Math.min(
+      Math.max(preferredLeft, viewportGap),
+      maximumLeft,
+    );
+    const preferredTop =
+      anchorRect.top - annotationRect.height - annotationGap;
+    const top =
+      preferredTop >= viewportGap
+        ? preferredTop
+        : anchorRect.bottom + annotationGap;
+    annotationHost.style.left = `${left}px`;
+    annotationHost.style.top = `${top}px`;
   }
 
   async function cancelActiveQuickHint(): Promise<void> {
@@ -533,17 +680,28 @@ function startReadingFlow(): void {
       const response = (await browser.runtime.sendMessage({
         type: 'cancel-quick-hint',
       })) as QuickHintResponse;
-      setStatus(
-        response.status === 'completed'
-          ? '快速提示已完成。'
-          : response.message,
-      );
+      if (response.status === 'completed') {
+        setStatus(completedStatus(response));
+        setQuickHintAnnotation(response.result.simplerExpression);
+        setQuickHintOutput(
+          response.result.simplerExpression,
+          response.result.explanationCue,
+        );
+      } else {
+        setStatus(response.message);
+        hideQuickHintAnnotation();
+        setQuickHintOutput('快速提示已取消', response.message);
+      }
     } catch {
-      setStatus('已取消 Quick Hint；Selection 仍保留。');
+      const message = '已取消 Quick Hint；Selection 仍保留。';
+      setStatus(message);
+      hideQuickHintAnnotation();
+      setQuickHintOutput('快速提示已取消', message);
     }
   }
 
   async function requestDeepDive(): Promise<void> {
+    invalidateQuickHintRequest();
     if (
       snapshot === null ||
       snapshot.codePointLength > SELECTION_LIMIT
@@ -581,12 +739,26 @@ function startReadingFlow(): void {
   }
 
   function placeSurface(): void {
+    placeQuickHintAnnotation();
     if (host === null || snapshot === null) return;
     const currentRect = snapshot.range.getBoundingClientRect();
     if (currentRect.width === 0 && currentRect.height === 0) return;
+    const annotationRect = annotationHost?.getBoundingClientRect();
+    const surfaceAnchor = {
+      left: currentRect.left,
+      right: currentRect.right,
+      top:
+        annotationRect === undefined
+          ? currentRect.top
+          : Math.min(currentRect.top, annotationRect.top),
+      bottom:
+        annotationRect === undefined
+          ? currentRect.bottom
+          : Math.max(currentRect.bottom, annotationRect.bottom),
+    };
     const surfaceRect = host.getBoundingClientRect();
     const placement = fitAnchoredSurface(
-      currentRect,
+      surfaceAnchor,
       {
         width: Math.max(surfaceRect.width, 280),
         height: Math.max(surfaceRect.height, 80),
@@ -927,6 +1099,77 @@ function createStyles(): HTMLStyleElement {
     @media (prefers-reduced-motion: no-preference) { section { animation: lingo-palette-in 100ms ease-out; } }
     @keyframes lingo-palette-in { from { opacity: 0; transform: translateY(3px); } }
     @media (forced-colors: active) { section, button { border: 2px solid ButtonText; } }
+  `;
+  return style;
+}
+
+function createAnnotationStyles(): HTMLStyleElement {
+  const style = document.createElement('style');
+  style.textContent = `
+    :host {
+      display: block;
+      width: max-content;
+      max-width: min(320px, calc(100vw - 16px));
+      font: 11px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .annotation {
+      position: relative;
+      box-sizing: border-box;
+      max-width: min(320px, calc(100vw - 16px));
+      padding: 1px 5px 2px;
+      border-radius: 5px;
+      background: rgb(248 250 252 / 94%);
+      color: #475569;
+      box-shadow: 0 1px 5px rgb(15 23 42 / 14%);
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      backdrop-filter: blur(4px);
+    }
+    .annotation::after {
+      position: absolute;
+      bottom: -2px;
+      left: 50%;
+      width: 4px;
+      height: 4px;
+      background: rgb(248 250 252 / 94%);
+      content: "";
+      transform: translateX(-50%) rotate(45deg);
+    }
+    strong {
+      color: #475569;
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: .005em;
+    }
+    [data-pending] {
+      min-width: 28px;
+      color: #64748b;
+      box-shadow: 0 1px 4px rgb(15 23 42 / 10%);
+    }
+    [data-pending] strong {
+      color: inherit;
+      letter-spacing: .16em;
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .annotation { animation: lingo-palette-annotation-in 120ms ease-out; }
+      [data-pending] strong {
+        animation: lingo-palette-pending 900ms ease-in-out infinite alternate;
+      }
+    }
+    @keyframes lingo-palette-annotation-in {
+      from { opacity: 0; transform: translateY(1px); }
+    }
+    @keyframes lingo-palette-pending {
+      from { opacity: .42; }
+      to { opacity: .82; }
+    }
+    @media (forced-colors: active) {
+      .annotation { border: 1px solid CanvasText; background: Canvas; color: CanvasText; }
+      .annotation::after { display: none; }
+      strong { color: CanvasText; }
+    }
   `;
   return style;
 }

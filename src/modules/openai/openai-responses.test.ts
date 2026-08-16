@@ -364,6 +364,45 @@ describe('OpenAI Responses client', () => {
     expect(request?.max_output_tokens).toBe(1_024);
   });
 
+  it('keeps the default fetch receiver required by extension service workers', async () => {
+    const originalFetch = globalThis.fetch;
+    let receiver: unknown;
+    globalThis.fetch = (function (this: unknown) {
+      receiver = this;
+      if (this !== globalThis) {
+        return Promise.reject(new TypeError('Illegal invocation'));
+      }
+      return Promise.resolve(
+        completedResponse({
+          simplerExpression: 'plane',
+          explanationCue: null,
+        }),
+      );
+    }) as typeof fetch;
+
+    try {
+      const client = createOpenAiResponsesClient();
+      await expect(
+        client.generateQuickHint({
+          apiKey: 'sk-runtime',
+          configuration: customConfiguration,
+          selection: {
+            text: 'aircraft',
+            context: { before: '', after: '' },
+          },
+        }),
+      ).resolves.toMatchObject({
+        result: {
+          simplerExpression: 'plane',
+          explanationCue: null,
+        },
+      });
+      expect(receiver).toBe(globalThis);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('reports exhausted output headroom as an incomplete provider response', async () => {
     const client = createOpenAiResponsesClient(async () =>
       Response.json({

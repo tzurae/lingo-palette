@@ -627,7 +627,8 @@ type FetchImplementation = (
 ) => Promise<Response>;
 
 export function createOpenAiResponsesClient(
-  fetchImplementation: FetchImplementation = fetch,
+  fetchImplementation: FetchImplementation = (input, init) =>
+    globalThis.fetch(input, init),
 ): {
   probeAndReport(
     input: ClientInput,
