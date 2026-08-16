@@ -67,3 +67,4 @@ jobs:
           name: supported-page-automated-partial-${{ runner.os }}
           path: .smoke-results
           if-no-files-found: error
+          include-hidden-files: true

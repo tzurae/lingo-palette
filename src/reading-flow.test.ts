@@ -4028,6 +4028,9 @@ describe('unpacked extension Reading Flow', () => {
           pageCase.selectionText,
         );
       }
+      expect(await target.evaluate(() => document.getSelection()?.toString())).toBe(
+        pageCase.selectionText,
+      );
       expect(await target.evaluate(() => document.activeElement?.id)).toBe(
         'smoke-selection',
       );
@@ -4379,11 +4382,17 @@ async function selectTextByKeyboard(
   if (content === null) throw new Error(`Expected text in ${selector}.`);
   const start = content.indexOf(text);
   if (start < 0) throw new Error(`Could not select ${text}.`);
-  await locator.focus();
-  await target.press(selector, 'Home');
-  for (let index = 0; index < start; index += 1) {
-    await target.press(selector, 'ArrowRight');
-  }
+  await locator.evaluate((element, offset) => {
+    const node = element.firstChild;
+    if (!(node instanceof Text)) throw new Error('Expected a text node.');
+    const selection = element.ownerDocument.getSelection();
+    const range = element.ownerDocument.createRange();
+    (element as HTMLElement).focus();
+    range.setStart(node, offset);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, start);
   const codePoints = Array.from(text);
   for (let index = 0; index < codePoints.length - 1; index += 1) {
     await target.press(selector, 'Shift+ArrowRight');
