@@ -323,6 +323,123 @@ describe('OpenAI Responses client', () => {
     expect(serialized).not.toMatch(/url|title|DOM|permission|Lookup history/i);
   });
 
+  it('leaves reasoning headroom for the requested Quick Hint text', async () => {
+    let request: z.infer<typeof requestBodySchema> | undefined;
+    const client = createOpenAiResponsesClient(async (_input, init) => {
+      request = parseRequestBody(init);
+      if (request.max_output_tokens <= 256) {
+        return Response.json({
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          output: [{ type: 'reasoning' }],
+          usage: {
+            input_tokens: 42,
+            output_tokens: 256,
+            output_tokens_details: { reasoning_tokens: 256 },
+            total_tokens: 298,
+          },
+        });
+      }
+      return completedResponse({
+        simplerExpression: 'plane',
+        explanationCue: '飛機',
+      });
+    });
+
+    await expect(
+      client.generateQuickHint({
+        apiKey: 'sk-runtime',
+        configuration: customConfiguration,
+        selection: {
+          text: 'aircraft',
+          context: { before: 'visits an ', after: ' carrier' },
+        },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        simplerExpression: 'plane',
+        explanationCue: '飛機',
+      },
+    });
+    expect(request?.max_output_tokens).toBe(1_024);
+  });
+
+  it('keeps the default fetch receiver required by extension service workers', async () => {
+    const originalFetch = globalThis.fetch;
+    let receiver: unknown;
+    globalThis.fetch = (function (this: unknown) {
+      receiver = this;
+      if (this !== globalThis) {
+        return Promise.reject(new TypeError('Illegal invocation'));
+      }
+      return Promise.resolve(
+        completedResponse({
+          simplerExpression: 'plane',
+          explanationCue: null,
+        }),
+      );
+    }) as typeof fetch;
+
+    try {
+      const client = createOpenAiResponsesClient();
+      await expect(
+        client.generateQuickHint({
+          apiKey: 'sk-runtime',
+          configuration: customConfiguration,
+          selection: {
+            text: 'aircraft',
+            context: { before: '', after: '' },
+          },
+        }),
+      ).resolves.toMatchObject({
+        result: {
+          simplerExpression: 'plane',
+          explanationCue: null,
+        },
+      });
+      expect(receiver).toBe(globalThis);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('reports exhausted output headroom as an incomplete provider response', async () => {
+    const client = createOpenAiResponsesClient(async () =>
+      Response.json({
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        output: [{ type: 'reasoning' }],
+        usage: {
+          input_tokens: 42,
+          output_tokens: 1_024,
+          output_tokens_details: { reasoning_tokens: 1_024 },
+          total_tokens: 1_066,
+        },
+      }),
+    );
+
+    const failure = client.generateQuickHint({
+      apiKey: 'sk-runtime',
+      configuration: customConfiguration,
+      selection: {
+        text: 'aircraft',
+        context: { before: 'visits an ', after: ' carrier' },
+      },
+    });
+
+    await expect(failure).rejects.toBeInstanceOf(OpenAiProviderError);
+    await expect(failure).rejects.not.toBeInstanceOf(OpenAiCompatibilityError);
+    await expect(failure).rejects.toMatchObject({
+      providerKind: 'provider-unavailable',
+      retryable: false,
+      usage: {
+        outputTokens: 1_024,
+        reasoningTokens: 1_024,
+      },
+    });
+    await expect(failure).rejects.toThrow('用完 1,024 個 output token 上限');
+  });
+
   it('keeps the bounded Deep Dive payload beneath its extension-owned schema', async () => {
     let request: z.infer<typeof requestBodySchema> | undefined;
     const client = createOpenAiResponsesClient(async (_input, init) => {

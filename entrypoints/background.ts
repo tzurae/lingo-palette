@@ -225,9 +225,10 @@ const controlledRequestSchema = z.object({
 const controlledSpeechRequestSchema = z.object({
   stream_format: z.literal('sse'),
 });
-const openAiResponsesClient = createOpenAiResponsesClient(
-  import.meta.env.WXT_TEST_BROWSER === 'true' ? controlledOpenAiFetch : fetch,
-);
+const openAiResponsesClient =
+  import.meta.env.WXT_TEST_BROWSER === 'true'
+    ? createOpenAiResponsesClient(controlledOpenAiFetch)
+    : createOpenAiResponsesClient();
 const reviewReuseHarness = createReviewGenerationHarness({
   evidencePack: BUNDLED_ENGLISH_EVIDENCE_PACK,
   evaluator: {

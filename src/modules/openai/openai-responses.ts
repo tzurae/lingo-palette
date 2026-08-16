@@ -23,7 +23,7 @@ import type { MeasuredReviewKnowledgeDimension } from '../review/review-source-a
 
 const responsesEndpoint = 'https://api.openai.com/v1/responses';
 export const OPENAI_REQUEST_TIMEOUT_MS = 30_000;
-const quickHintMaximumOutputTokens = 256;
+export const QUICK_HINT_MAXIMUM_OUTPUT_TOKENS = 1_024;
 const deepDiveMaximumOutputTokens = 2_048;
 const reviewCandidateMaximumOutputTokens = 2_048;
 const providerFramingTokenAllowance = 1_024;
@@ -50,6 +50,11 @@ const usageSchema = z.object({
   total_tokens: z.number().int().nonnegative(),
 });
 const responseSchema = z.object({
+  status: z.string().optional(),
+  incomplete_details: z
+    .object({ reason: z.string().optional() })
+    .nullable()
+    .optional(),
   output: z.array(
     z.object({
       type: z.string(),
@@ -345,7 +350,7 @@ export function quickHintProviderTokenUpperBound(
   return (
     new TextEncoder().encode(serializedBody).byteLength +
     providerFramingTokenAllowance +
-    quickHintMaximumOutputTokens
+    QUICK_HINT_MAXIMUM_OUTPUT_TOKENS
   );
 }
 
@@ -362,7 +367,7 @@ function quickHintRequest(
     model: input.configuration.model.id,
     effort: input.configuration.efforts.quickHint,
     format: quickHintFormat,
-    maxOutputTokens: quickHintMaximumOutputTokens,
+    maxOutputTokens: QUICK_HINT_MAXIMUM_OUTPUT_TOKENS,
     input: [
       {
         role: 'developer',
@@ -622,7 +627,8 @@ type FetchImplementation = (
 ) => Promise<Response>;
 
 export function createOpenAiResponsesClient(
-  fetchImplementation: FetchImplementation = fetch,
+  fetchImplementation: FetchImplementation = (input, init) =>
+    globalThis.fetch(input, init),
 ): {
   probeAndReport(
     input: ClientInput,
@@ -907,6 +913,20 @@ async function requestStructuredOutput(input: {
     );
   }
   const usage = usageFromProvider(parsed.data.usage);
+  if (parsed.data.status === 'incomplete') {
+    const reason = parsed.data.incomplete_details?.reason;
+    throw new OpenAiProviderError(
+      reason === 'max_output_tokens'
+        ? `模型 "${input.model}" 在傳回 Structured Outputs 前已用完 ${input.maxOutputTokens.toLocaleString('en-US')} 個 output token 上限；本次未取得可顯示內容。`
+        : `模型 "${input.model}" 傳回未完成的 Structured Outputs${reason === undefined ? '。' : `（${reason}）。`}`,
+      [],
+      {
+        providerKind: 'provider-unavailable',
+        retryable: false,
+        usage,
+      },
+    );
+  }
   const outputText = extractOutputText(parsed.data.output);
   if (outputText === null) {
     throw new OpenAiCompatibilityError(
