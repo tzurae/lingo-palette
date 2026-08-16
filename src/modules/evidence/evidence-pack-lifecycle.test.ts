@@ -411,6 +411,39 @@ describe('Evidence Pack lifecycle', () => {
     });
   });
 
+  it('rejects an invalid manifest signature without staging a candidate', async () => {
+    const release = await createSignedRelease('2025.1.0');
+    const invalidSignature = release.signatureBytes.slice();
+    invalidSignature[0] = (invalidSignature[0] ?? 0) ^ 0xff;
+    const storage = createMemoryStorage({
+      version: 1,
+      activeVersion: '2024.1.0',
+      rollbackVersion: null,
+      revalidationSweeps: [],
+      installedCandidates: { '2024.1.0': 'c'.repeat(64) },
+    });
+    const lifecycle = createEvidencePackLifecycle({
+      extensionVersion: '0.0.0',
+      signatureVerifier: createEd25519SignatureVerifier(
+        release.publicKeyBytes,
+      ),
+      storage,
+      transport: {
+        async fetchAsset(_release, asset) {
+          if (asset === 'manifest.json') return release.manifestBytes;
+          if (asset === 'manifest.sig') return invalidSignature;
+          return release.compressedPayload;
+        },
+      },
+    });
+
+    await expect(
+      lifecycle.inspect({ language: 'en', version: '2025.1.0' }),
+    ).rejects.toMatchObject({ code: 'signature-invalid' });
+    expect(storage.staged.size).toBe(0);
+    expect((await lifecycle.snapshot()).activeVersion).toBe('2024.1.0');
+  });
+
   it('rejects a file whose bytes do not match the signed inventory', async () => {
     const signedRelease = await createSignedRelease('2025.1.0');
     const release = tamperFileWithoutUpdatingItsInventory(signedRelease);

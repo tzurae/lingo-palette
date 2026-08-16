@@ -174,14 +174,6 @@ export function createBudgetLedger(
         };
     let changed =
       !parsedLedger.success || parsedLedger.data.backgroundUsed === undefined;
-    for (const [reservationId, reservation] of Object.entries(
-      ledger.reservations,
-    )) {
-      if (reservation.ownerId !== ownerId) {
-        delete ledger.reservations[reservationId];
-        changed = true;
-      }
-    }
     if (today > ledger.activeDate) {
       ledger = {
         activeDate: today,
@@ -190,6 +182,22 @@ export function createBudgetLedger(
         reservations: ledger.reservations,
       };
       changed = true;
+    }
+    for (const [reservationId, reservation] of Object.entries(
+      ledger.reservations,
+    )) {
+      if (reservation.ownerId !== ownerId) {
+        const upperBound = reservationUpperBoundUsage(reservation);
+        ledger.used = addUsage(ledger.used, upperBound);
+        if (reservation.scope === 'background') {
+          ledger.backgroundUsed = addUsage(
+            ledger.backgroundUsed,
+            upperBound,
+          );
+        }
+        delete ledger.reservations[reservationId];
+        changed = true;
+      }
     }
     if (changed) {
       await storage.set({ [OPENAI_BUDGET_LEDGER_STORAGE_KEY]: ledger });
@@ -412,6 +420,19 @@ function addUsage(current: LedgerUsage, added: ProviderUsage): LedgerUsage {
     knownEstimatedCostUsd: roundCost(
       current.knownEstimatedCostUsd + (added.estimatedCostUsd ?? 0),
     ),
+  };
+}
+
+function reservationUpperBoundUsage(
+  reservation: BudgetReservation,
+): ProviderUsage {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: reservation.tokens,
+    estimatedCostUsd: reservation.estimatedCostUsd,
   };
 }
 
