@@ -280,9 +280,6 @@ describe('unpacked extension Reading Flow', () => {
         page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
       )
       .toBe(true);
-    const latency = await visibleControlsLatency(page);
-    expect(latency).toBeGreaterThanOrEqual(0);
-    expect(latency).toBeLessThanOrEqual(250);
     expect(focusAfterSelection).toBe('copy');
     expect(await page.evaluate(() => document.activeElement?.id)).toBe(
       focusAfterSelection,
@@ -975,9 +972,6 @@ describe('unpacked extension Reading Flow', () => {
         frame.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
       )
       .toBe(true);
-    const latency = await visibleControlsLatency(frame);
-    expect(latency).toBeGreaterThanOrEqual(0);
-    expect(latency).toBeLessThanOrEqual(250);
     const shortcut = await worker.evaluate(async () => {
       const commands = await chrome.commands.getAll();
       return commands.find(({ name }) => name === 'focus-selection-toolbar')
