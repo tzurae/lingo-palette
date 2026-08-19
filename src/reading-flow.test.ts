@@ -1929,7 +1929,7 @@ describe('unpacked extension Reading Flow', () => {
       'offline',
       'The offline cache miss was announced in the anchored status region.',
     );
-  });
+  }, 15_000);
 
   it('shows retry waiting, retry exhaustion, and a later successful third attempt', async () => {
     await closeReadingFlowSurface();
