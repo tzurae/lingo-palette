@@ -1,214 +1,188 @@
-:root {
-  font: 16px/1.5 system-ui, sans-serif;
-  color: #172033;
-  background: #f8fafc;
+@import "tailwindcss" source(none);
+@import "../../src/styles/theme.css";
+@source "./index.html";
+@source "./main.ts";
+
+@layer base {
+  :root {
+    @apply bg-canvas text-ink;
+    font: 16px/1.5 system-ui, sans-serif;
+  }
+
+  body {
+    @apply m-0;
+  }
+
+  h1 {
+    @apply my-[16.08px] text-display font-bold;
+  }
+
+  h2 {
+    @apply my-[14.94px] text-[18px] font-bold;
+  }
+
+  h3 {
+    @apply mt-0 mb-[14.04px] text-[14.04px] font-bold;
+  }
+
+  h4 {
+    margin: 1.33em 0;
+    font-size: 1em;
+    font-weight: 700;
+  }
+
+  h5 {
+    margin: 1.67em 0;
+    font-size: .83em;
+    font-weight: 700;
+  }
+
+  p {
+    @apply my-3;
+  }
+
+  main {
+    @apply mx-auto box-border w-full max-w-settings px-5 py-8;
+  }
+
+  section {
+    @apply mt-6 rounded-panel border border-border-subtle bg-surface p-5;
+  }
+
+  form,
+  .field,
+  fieldset {
+    @apply grid gap-2;
+  }
+
+  form {
+    @apply gap-5;
+  }
+
+  fieldset {
+    @apply m-0 rounded-inset border border-border p-4;
+  }
+
+  label,
+  legend {
+    @apply font-label;
+  }
+
+  input,
+  select,
+  textarea {
+    @apply box-border w-full min-h-9 rounded-field border border-border-strong bg-surface p-2 text-black;
+    font: inherit;
+  }
+
+  textarea {
+    @apply resize-y;
+  }
+
+  a {
+    @apply min-h-9;
+    font: inherit;
+  }
+
+  button {
+    all: revert;
+    box-sizing: border-box;
+    min-height: 36px;
+    font: inherit;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    @apply outline-3 outline-focus outline-offset-3;
+  }
+
+  ul {
+    @apply my-3 grid list-none gap-2 p-0;
+  }
+
+  li {
+    @apply flex items-center justify-between gap-4 [overflow-wrap:anywhere];
+  }
 }
 
-body {
-  margin: 0;
-}
+@layer components {
+  .inline-control {
+    @apply flex items-center gap-2 font-normal;
+  }
 
-main {
-  box-sizing: border-box;
-  width: min(720px, 100%);
-  margin: 0 auto;
-  padding: 32px 20px;
-}
+  .inline-control input {
+    @apply min-h-0 w-auto;
+  }
 
-section {
-  margin-top: 24px;
-  padding: 20px;
-  border: 1px solid #94a3b8;
-  border-radius: 12px;
-  background: white;
-}
+  .status-grid,
+  .evidence-actions {
+    @apply grid gap-3;
+  }
 
-form,
-.field,
-fieldset {
-  display: grid;
-  gap: 8px;
-}
+  .status-grid {
+    @apply my-4 grid-cols-[repeat(auto-fit,minmax(180px,1fr))];
+  }
 
-form {
-  gap: 20px;
-}
+  .status-grid div,
+  .disclosure {
+    @apply rounded-inset border border-border p-3;
+  }
 
-fieldset {
-  margin: 0;
-  padding: 16px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-}
+  .status-grid dt {
+    @apply font-label;
+  }
 
-label,
-legend {
-  font-weight: 650;
-}
+  .status-grid dd {
+    @apply mt-1 mb-0;
+  }
 
-input,
-select,
-textarea {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 40px;
-  padding: 8px;
-  border: 1px solid #64748b;
-  border-radius: 6px;
-  font: inherit;
-}
+  .disclosure {
+    @apply mt-4 bg-canvas;
+  }
 
-textarea {
-  resize: vertical;
-}
+  .backup-actions {
+    @apply flex flex-wrap gap-3;
+  }
 
-.inline-control {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 400;
-}
+  .file-button {
+    @apply inline-flex min-h-9 cursor-pointer items-center rounded-[2px] px-[6px] py-px font-normal;
+    border: 1px solid ButtonBorder;
+    background: ButtonFace;
+    color: ButtonText;
+  }
 
-.inline-control input {
-  width: auto;
-  min-height: auto;
-}
+  .file-button:has(+ #import-portable-backup-file:focus-visible) {
+    @apply outline-2 outline-[Highlight] outline-offset-2;
+  }
 
-.status-grid,
-.evidence-actions {
-  display: grid;
-  gap: 12px;
-}
+  #import-portable-backup-file {
+    @apply absolute size-px min-h-px overflow-hidden p-0 whitespace-nowrap [clip-path:inset(50%)];
+  }
 
-.status-grid {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  margin: 16px 0;
-}
+  .import-collision,
+  .import-report {
+    @apply mt-3 rounded-inset border border-border p-3;
+  }
 
-.status-grid div,
-.disclosure {
-  padding: 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-}
+  .comparison {
+    @apply grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3;
+  }
 
-.status-grid dt {
-  font-weight: 650;
-}
+  .comparison pre {
+    @apply m-0 max-h-60 overflow-auto bg-code p-2 whitespace-pre-wrap [overflow-wrap:anywhere];
+  }
 
-.status-grid dd {
-  margin: 4px 0 0;
-}
-
-.disclosure {
-  margin-top: 16px;
-  background: #f8fafc;
-}
-
-.disclosure h3 {
-  margin-top: 0;
-}
-
-.backup-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.file-button {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 1px 6px;
-  border: 1px solid ButtonBorder;
-  border-radius: 2px;
-  background: ButtonFace;
-  color: ButtonText;
-  font-weight: 400;
-  cursor: pointer;
-}
-
-.file-button:has(+ #import-portable-backup-file:focus-visible) {
-  outline: 2px solid Highlight;
-  outline-offset: 2px;
-}
-
-#import-portable-backup-file {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  min-height: 1px;
-  padding: 0;
-  clip-path: inset(50%);
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.import-collision,
-.import-report {
-  margin-top: 12px;
-  padding: 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-}
-
-.comparison {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-}
-
-.comparison pre {
-  max-height: 240px;
-  margin: 0;
-  padding: 8px;
-  overflow: auto;
-  background: #e2e8f0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.warning,
-.error {
-  color: #991b1b;
-  font-weight: 650;
+  .warning,
+  .error {
+    @apply font-label text-danger;
+  }
 }
 
 [hidden] {
   display: none !important;
-}
-
-ul {
-  display: grid;
-  gap: 8px;
-  padding: 0;
-  list-style: none;
-}
-
-li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  overflow-wrap: anywhere;
-}
-
-button,
-a,
-input,
-select,
-textarea {
-  min-height: 36px;
-  font: inherit;
-}
-
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 3px solid #f59e0b;
-  outline-offset: 3px;
 }
 
 @media (forced-colors: active) {

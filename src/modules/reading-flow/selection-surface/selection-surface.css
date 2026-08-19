@@ -1,0 +1,237 @@
+@import "tailwindcss" source(none);
+@import "../../../styles/theme.css";
+@source "./selection-surface.tsx";
+
+@layer base {
+  :host {
+    @apply font-system;
+    color-scheme: light;
+  }
+}
+
+@layer components {
+  .expanded-host,
+  .peek-host {
+    @apply pointer-events-none [color-scheme:light];
+    --tw-border-style: solid;
+    --tw-outline-style: solid;
+    --tw-inset-shadow: 0 0 #0000;
+    --tw-inset-ring-shadow: 0 0 #0000;
+    --tw-ring-offset-shadow: 0 0 #0000;
+    --tw-ring-shadow: 0 0 #0000;
+  }
+
+  .expanded-surface {
+    @apply pointer-events-auto box-border w-80 max-w-[calc(100vw-16px)] max-h-[calc(100vh-16px)] overflow-y-auto rounded-card border border-border-dark bg-surface p-3 font-system text-[14px]/[1.45] text-ink shadow-floating;
+  }
+
+  .header {
+    @apply flex items-center justify-between gap-3;
+  }
+
+  .permission-copy,
+  .status,
+  .error {
+    @apply mt-2 mb-0;
+  }
+
+  .expanded-surface button {
+    @apply min-h-9 cursor-pointer rounded-control border border-border-dark bg-surface px-[6px] py-px text-ink;
+    font: inherit;
+  }
+
+  .expanded-surface button:focus-visible {
+    @apply outline-3 outline-focus outline-offset-2;
+  }
+
+  .expanded-surface button:disabled,
+  .expanded-surface button[aria-disabled="true"] {
+    @apply cursor-not-allowed opacity-[.58];
+  }
+
+  .primary,
+  .secondary {
+    @apply w-full bg-surface font-action text-ink;
+  }
+
+  .expanded-surface .primary {
+    @apply border-brand bg-brand text-ink-inverse;
+  }
+
+  .permission-copy + .primary {
+    @apply mt-[10px];
+  }
+
+  .analysis-actions {
+    @apply mt-[10px] grid grid-cols-2 gap-2;
+  }
+
+  .close {
+    @apply min-w-12;
+  }
+
+  .error {
+    @apply font-label text-danger;
+  }
+
+  .result {
+    @apply mt-[10px] grid gap-1 rounded-control bg-brand-soft p-[10px];
+  }
+
+  .pronunciation {
+    @apply mt-3 grid gap-2 border-t border-border pt-[10px];
+  }
+
+  .pronunciation-title {
+    @apply text-meta;
+  }
+
+  .pronunciation-varieties,
+  .pronunciation-playback-controls {
+    @apply grid grid-cols-2 gap-2;
+  }
+
+  .pronunciation-variety[aria-pressed="true"] {
+    @apply border-brand bg-brand-selected;
+  }
+
+  .pronunciation-progress {
+    @apply w-full accent-brand;
+  }
+
+  .pronunciation-status,
+  .status {
+    @apply m-0 text-[12px]/[1.15] text-ink-subtle;
+  }
+
+  .status:not(:empty) {
+    @apply mt-2 max-h-[4.35em] overflow-y-auto;
+  }
+
+  .peek-host {
+    @apply w-max max-w-[min(320px,calc(100vw-16px))] font-system text-[12px]/[1.15];
+  }
+
+  .annotation {
+    --peek-ink: #000;
+    --peek-outline: rgb(255 255 255 / 92%);
+    --peek-outline-solid: #fff;
+    @apply box-border flex max-w-[min(320px,calc(100vw-16px))] items-center gap-1 bg-transparent whitespace-nowrap;
+    color: var(--peek-ink);
+  }
+
+  .peek-status {
+    @apply absolute -m-px size-px overflow-hidden border-0 p-0 whitespace-nowrap [clip:rect(0,0,0,0)];
+  }
+
+  .annotation[data-ink="light"] {
+    --peek-ink: #fff;
+    --peek-outline: rgb(0 0 0 / 94%);
+    --peek-outline-solid: #000;
+  }
+
+  .annotation-copy {
+    @apply pointer-events-none min-w-0 overflow-hidden text-ellipsis;
+  }
+
+  .annotation-copy strong {
+    @apply text-[12px]/[1.15] font-label tracking-annotation text-inherit;
+    -webkit-text-stroke: .3px var(--peek-outline);
+    paint-order: stroke fill;
+    text-shadow: 0 0 1px var(--peek-outline);
+  }
+
+  .annotation-actions {
+    @apply pointer-events-auto flex flex-none gap-px;
+  }
+
+  .peek-action {
+    @apply grid size-6 cursor-pointer place-items-center rounded-full border-0 bg-transparent p-1 text-inherit;
+  }
+
+  .peek-action:hover {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+  }
+
+  .peek-action:active {
+    background: color-mix(in srgb, currentColor 18%, transparent);
+  }
+
+  .peek-action:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+    box-shadow: 0 0 0 1px var(--peek-outline-solid);
+  }
+
+  .peek-action svg {
+    @apply size-full overflow-visible fill-none stroke-current;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 0 1px var(--peek-outline-solid));
+  }
+
+  .annotation[data-pending] strong {
+    @apply tracking-pending;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .expanded-surface {
+    animation: lingo-palette-in 100ms ease-out;
+  }
+
+  .annotation {
+    animation: lingo-palette-annotation-in 120ms ease-out;
+  }
+
+  .annotation[data-pending] strong {
+    animation: lingo-palette-pending 900ms ease-in-out infinite alternate;
+  }
+}
+
+@keyframes lingo-palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+@keyframes lingo-palette-annotation-in {
+  from {
+    opacity: 0;
+    transform: translateY(1px);
+  }
+}
+
+@keyframes lingo-palette-pending {
+  from { opacity: .62; }
+  to { opacity: 1; }
+}
+
+@media (forced-colors: active) {
+  .expanded-surface,
+  .expanded-surface button {
+    border: 2px solid ButtonText;
+  }
+
+  .annotation {
+    --peek-ink: CanvasText;
+    --peek-outline: transparent;
+    --peek-outline-solid: Canvas;
+    color: CanvasText;
+  }
+
+  .peek-action {
+    border: 2px solid ButtonText;
+  }
+
+  .annotation-copy strong {
+    -webkit-text-stroke: 0;
+    text-shadow: none;
+  }
+
+  .peek-action svg {
+    filter: none;
+  }
+}
