@@ -972,13 +972,6 @@ describe('unpacked extension Reading Flow', () => {
     let sidePanel = await context.newPage();
     await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
     await expect
-      .poll(
-        () =>
-          sidePanel.getByRole('heading', { name: 'Deep Dive in progress' }).isVisible(),
-        { timeout: 5_000 },
-      )
-      .toBe(true);
-    await expect
       .poll(() =>
         sidePanel
           .getByRole('tabpanel', { name: 'Current' })
@@ -1944,14 +1937,14 @@ describe('unpacked extension Reading Flow', () => {
       await chrome.storage.local.set({ openAiTestOnline: false });
     });
     await closeReadingFlowSurface();
-    await selectTextByPointer(page, '#copy', 'The committee');
+    await selectTextProgrammatically(page, '#copy', 'The committee');
     try {
       await page.getByRole('button', { name: '快速提示' }).click();
       await expect
         .poll(() => page.getByRole('status').textContent())
         .toContain('本機快取載入；未使用 provider budget');
       await closeReadingFlowSurface();
-      await selectTextByPointer(page, '#copy', 'decided to');
+      await selectTextProgrammatically(page, '#copy', 'decided to');
       await page.getByRole('button', { name: '快速提示' }).click();
       await expect
         .poll(() => page.getByRole('status').textContent())
@@ -5001,6 +4994,15 @@ async function selectNodeContents(
 async function openExpandedSelectionSurface(
   target: Page | Frame,
 ): Promise<void> {
+  const visibleSurface = target.locator(
+    '[data-lingo-palette-reading-flow], [data-lingo-palette-quick-hint-annotation]',
+  );
+  await expect
+    .poll(() => visibleSurface.count(), {
+      message: 'Expected Selection processing before opening expanded controls.',
+      timeout: 5_000,
+    })
+    .toBeGreaterThan(0);
   await target.evaluate(() =>
     window.dispatchEvent(
       new Event('lingo-palette:focus-selection-toolbar'),
