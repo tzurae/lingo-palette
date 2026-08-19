@@ -34,6 +34,10 @@ function compliantPackage(
     'THIRD_PARTY_NOTICES.txt': strToU8(
       [
         '@noble/ed25519 3.1.0',
+        '@floating-ui/core 1.8.0',
+        '@floating-ui/dom 1.8.0',
+        '@floating-ui/utils 0.2.12',
+        'zustand 5.0.15',
         'react 19.2.8',
         'react-dom 19.2.8',
         'scheduler 0.27.0',

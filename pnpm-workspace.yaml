@@ -1,2 +1,6 @@
 allowBuilds:
   esbuild: true
+  spawn-sync: false
+patchedDependencies:
+  # WXT unlisted scripts can reach Vite's CSS post phase before its cache exists.
+  vite@8.2.1: patches/vite@8.2.1.patch

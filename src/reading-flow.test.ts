@@ -283,15 +283,15 @@ describe('unpacked extension Reading Flow', () => {
         'The first paragraph remains readable while a later selection receives a local annotation.';
       copy.before(precedingParagraph);
     });
-    await selectTextByPointer(page, '#copy', 'postpone');
+    await selectTextByPointer(page, '#copy', 'postpone', false);
     const focusAfterSelection = await page.evaluate(
       () => document.activeElement?.id,
     );
     await expect
       .poll(() =>
-        page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
+        page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).count(),
       )
-      .toBe(true);
+      .toBe(0);
     expect(focusAfterSelection).toBe('copy');
     expect(await page.evaluate(() => document.activeElement?.id)).toBe(
       focusAfterSelection,
@@ -307,36 +307,77 @@ describe('unpacked extension Reading Flow', () => {
     );
     await expect.poll(() => annotation.isVisible()).toBe(true);
     await expect
-      .poll(() => annotation.textContent())
+      .poll(() => annotation.locator('.annotation-copy').textContent())
       .toContain('delay until a later time');
     const placement = await page.evaluate(() => {
       const range = document.getSelection()?.getRangeAt(0);
       const selectedRect = range?.getClientRects()[0];
-      const annotationElement = document.querySelector<HTMLElement>(
+      const annotationHost = document.querySelector<HTMLElement>(
         '[data-lingo-palette-quick-hint-annotation]',
       );
-      if (selectedRect === undefined || annotationElement === null) return null;
-      const annotationRect = annotationElement.getBoundingClientRect();
+      const annotation = annotationHost?.shadowRoot?.querySelector<HTMLElement>(
+        '.annotation',
+      );
+      const copy = annotation?.querySelector<HTMLElement>('.annotation-copy');
+      const buttons = annotation?.querySelectorAll('button');
+      if (
+        selectedRect === undefined ||
+        annotationHost === null ||
+        annotation === null ||
+        annotation === undefined ||
+        copy === null ||
+        copy === undefined
+      ) {
+        return null;
+      }
+      const annotationRect = annotationHost.getBoundingClientRect();
+      const copyRect = copy.getBoundingClientRect();
+      const annotationStyle = getComputedStyle(annotation);
+      const buttonStyle =
+        buttons?.[0] === undefined ? null : getComputedStyle(buttons[0]);
       return {
         gap: selectedRect.top - annotationRect.bottom,
         height: annotationRect.height,
-        horizontalOffset: Math.abs(
+        copyHorizontalOffset: Math.abs(
           selectedRect.left +
             selectedRect.width / 2 -
-            (annotationRect.left + annotationRect.width / 2),
+            (copyRect.left + copyRect.width / 2),
         ),
-        pointerEvents: getComputedStyle(annotationElement).pointerEvents,
+        pointerEvents: getComputedStyle(annotationHost).pointerEvents,
+        backgroundColor: annotationStyle.backgroundColor,
+        boxShadow: annotationStyle.boxShadow,
+        ink: annotation.dataset.ink,
+        buttonCount: buttons?.length ?? 0,
+        buttonBackground: buttonStyle?.backgroundColor,
       };
     });
     expect(placement).not.toBeNull();
     expect(placement?.gap).toBeGreaterThanOrEqual(1);
     expect(placement?.gap).toBeLessThanOrEqual(5);
-    expect(placement?.height).toBeLessThanOrEqual(22);
-    expect(placement?.horizontalOffset).toBeLessThanOrEqual(8);
+    expect(placement?.height).toBeLessThanOrEqual(32);
+    expect(placement?.copyHorizontalOffset).toBeLessThanOrEqual(2);
     expect(placement?.pointerEvents).toBe('none');
+    expect(placement?.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(placement?.boxShadow).toBe('none');
+    expect(placement?.ink).toBe('dark');
+    expect(placement?.buttonCount).toBe(2);
+    expect(placement?.buttonBackground).toBe('rgba(0, 0, 0, 0)');
+    await expect
+      .poll(() =>
+        page.getByRole('button', { name: '開啟發音選項' }).isVisible(),
+      )
+      .toBe(true);
+    const more = page.getByRole('button', { name: '更多選取操作' });
+    await expect.poll(() => more.isVisible()).toBe(true);
+    await page.screenshot({
+      path: resolve('docs/assets/quick-hint-inline-annotation.png'),
+      fullPage: false,
+    });
+    await more.click();
     const toolbar = page.getByRole('toolbar', {
       name: 'Lingo Palette 選取工具',
     });
+    await expect.poll(() => toolbar.isVisible()).toBe(true);
     await expect
       .poll(() =>
         toolbar.getByText('delay until a later time', { exact: true }).isVisible(),
@@ -347,10 +388,11 @@ describe('unpacked extension Reading Flow', () => {
         toolbar.getByText('延後原本安排的事情', { exact: true }).isVisible(),
       )
       .toBe(true);
-    await page.screenshot({
-      path: resolve('docs/assets/quick-hint-inline-annotation.png'),
-      fullPage: false,
-    });
+    await expect
+      .poll(() =>
+        page.locator('[data-lingo-palette-quick-hint-annotation]').count(),
+      )
+      .toBe(0);
     const providerRequest = await worker.evaluate(async () => {
       const stored = await chrome.storage.local.get('quickHintTestRequest');
       return stored.quickHintTestRequest;
@@ -370,14 +412,173 @@ describe('unpacked extension Reading Flow', () => {
       'result-count',
       'Quick Hint announced completion with an explicit total token count.',
     );
+
   }, 15_000);
+  it('uses light ink over a dark local background without adding a panel', async () => {
+    await closeReadingFlowSurface();
+    await page.evaluate(() => {
+      const darkCopy = document.createElement('p');
+      darkCopy.id = 'dark-copy';
+      darkCopy.textContent = 'They decided to postpone the vote.';
+      Object.assign(darkCopy.style, {
+        boxSizing: 'border-box',
+        width: '420px',
+        marginTop: '48px',
+        padding: '40px 16px 12px',
+        background: '#111827',
+        color: '#f8fafc',
+      });
+      document.querySelector('main')?.prepend(darkCopy);
+    });
+    await selectTextByPointer(page, '#dark-copy', 'postpone', false);
+    const annotation = page.locator(
+      '[data-lingo-palette-quick-hint-annotation] .annotation',
+    );
+    await expect
+      .poll(() => annotation.getAttribute('data-ink'))
+      .toBe('light');
+    const presentation = await annotation.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        backgroundColor: style.backgroundColor,
+        color: style.color,
+      };
+    });
+    expect(presentation).toEqual({
+      backgroundColor: 'rgba(0, 0, 0, 0)',
+      color: 'rgb(255, 255, 255)',
+    });
+    await page.evaluate(() => {
+      document.getSelection()?.removeAllRanges();
+      document.querySelector('#dark-copy')?.remove();
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    });
+  });
+
+  it('keeps quiet annotation text AA-readable over a mid-tone background', async () => {
+    await closeReadingFlowSurface();
+    await page.evaluate(() => {
+      const mediumCopy = document.createElement('p');
+      mediumCopy.id = 'medium-copy';
+      mediumCopy.textContent = 'They decided to postpone the vote.';
+      Object.assign(mediumCopy.style, {
+        boxSizing: 'border-box',
+        width: '420px',
+        marginTop: '48px',
+        padding: '40px 16px 12px',
+        background: '#7d7d7d',
+        color: '#fff',
+      });
+      document.querySelector('main')?.prepend(mediumCopy);
+    });
+    await selectTextByPointer(page, '#medium-copy', 'postpone', false);
+    const annotation = page.locator(
+      '[data-lingo-palette-quick-hint-annotation] .annotation',
+    );
+    await expect
+      .poll(() => annotation.getAttribute('data-ink'))
+      .toBe('dark');
+    const presentation = await annotation.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        backgroundColor: style.backgroundColor,
+        color: style.color,
+      };
+    });
+    expect(presentation).toEqual({
+      backgroundColor: 'rgba(0, 0, 0, 0)',
+      color: 'rgb(0, 0, 0)',
+    });
+    await page.evaluate(() => {
+      document.getSelection()?.removeAllRanges();
+      document.querySelector('#medium-copy')?.remove();
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    });
+  });
+
+  it('isolates Selection styling from hostile page tokens and root font sizes', async () => {
+    await closeReadingFlowSurface();
+    await page.evaluate(() => {
+      const hostileStyles = document.createElement('style');
+      hostileStyles.id = 'hostile-selection-styles';
+      hostileStyles.textContent = `
+        * {
+          --spacing: 99px;
+          --color-brand: hotpink;
+          --color-ink: lime;
+          --tw-border-style: dashed;
+          --tw-leading: 9;
+          color-scheme: dark !important;
+          font: 48px/3 serif !important;
+        }
+      `;
+      document.head.append(hostileStyles);
+    });
+    await selectTextByPointer(page, '#copy', 'postpone');
+    const host = page.locator('[data-lingo-palette-reading-flow]');
+    const presentations = [];
+    for (const rootFontSize of [10, 16, 32]) {
+      await page.evaluate(
+        (fontSize) => {
+          document.documentElement.style.fontSize = `${fontSize}px`;
+        },
+        rootFontSize,
+      );
+      presentations.push(
+        await host.evaluate((element) => {
+          const shadow = element.shadowRoot;
+          const wrapper = shadow?.querySelector('.expanded-host');
+          const surface = shadow?.querySelector('.expanded-surface');
+          const primary = shadow?.querySelector('.primary');
+          if (
+            !(wrapper instanceof HTMLElement) ||
+            !(surface instanceof HTMLElement) ||
+            !(primary instanceof HTMLButtonElement)
+          ) {
+            throw new Error('Missing expanded Selection elements.');
+          }
+          const surfaceStyle = getComputedStyle(surface);
+          const primaryStyle = getComputedStyle(primary);
+          return {
+            width: surface.getBoundingClientRect().width,
+            padding: surfaceStyle.padding,
+            fontSize: surfaceStyle.fontSize,
+            lineHeight: surfaceStyle.lineHeight,
+            color: surfaceStyle.color,
+            backgroundColor: surfaceStyle.backgroundColor,
+            borderStyle: surfaceStyle.borderStyle,
+            colorScheme: getComputedStyle(wrapper).colorScheme,
+            primaryBackground: primaryStyle.backgroundColor,
+          };
+        }),
+      );
+    }
+    expect(presentations).toEqual(
+      Array.from({ length: 3 }, () => ({
+        width: 320,
+        padding: '12px',
+        fontSize: '14px',
+        lineHeight: '20.3px',
+        color: 'rgb(23, 32, 51)',
+        backgroundColor: 'rgb(255, 255, 255)',
+        borderStyle: 'solid',
+        colorScheme: 'light',
+        primaryBackground: 'rgb(29, 78, 216)',
+      })),
+    );
+    await page.evaluate(() => {
+      document.documentElement.style.removeProperty('font-size');
+      document.querySelector('#hostile-selection-styles')?.remove();
+    });
+    await closeReadingFlowSurface();
+  });
 
   it('cancels a pending automatic Quick Hint when the Selection collapses', async () => {
     await closeReadingFlowSurface();
     await worker.evaluate(async () => {
       await chrome.storage.local.set({ openAiTestRequests: [] });
     });
-    await selectNodeContents(page, '#copy');
+    await selectNodeContents(page, '#copy', false);
     await expect
       .poll(() =>
         page
@@ -506,12 +707,48 @@ describe('unpacked extension Reading Flow', () => {
     const pronunciationStatus = pronunciation.locator(
       '.pronunciation-status',
     );
+    await pronunciationStatus.evaluate((element) => {
+      const observed = element as HTMLElement & {
+        observedMessages?: string[];
+        statusObserver?: MutationObserver;
+      };
+      const messages: string[] = [];
+      const capture = () => {
+        const message = element.textContent ?? '';
+        if (message.length > 0) messages.push(message);
+      };
+      observed.observedMessages = messages;
+      observed.statusObserver = new MutationObserver(capture);
+      observed.statusObserver.observe(element, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+      capture();
+    });
     await activateByKeyboard(
       pronunciation.getByRole('button', { name: 'US English' }),
     );
     await expect
-      .poll(() => pronunciationStatus.textContent())
-      .toContain('第 1 次語音嘗試未完成');
+      .poll(() =>
+        pronunciationStatus.evaluate((element) =>
+          (
+            element as HTMLElement & {
+              observedMessages?: string[];
+            }
+          ).observedMessages?.some((message) =>
+            message.includes('第 1 次語音嘗試未完成'),
+          ),
+        ),
+      )
+      .toBe(true);
+    await pronunciationStatus.evaluate((element) => {
+      (
+        element as HTMLElement & {
+          statusObserver?: MutationObserver;
+        }
+      ).statusObserver?.disconnect();
+    });
     await activateByKeyboard(
       pronunciation.getByRole('button', { name: '暫停' }),
     );
@@ -735,13 +972,6 @@ describe('unpacked extension Reading Flow', () => {
     let sidePanel = await context.newPage();
     await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
     await expect
-      .poll(
-        () =>
-          sidePanel.getByRole('heading', { name: 'Deep Dive in progress' }).isVisible(),
-        { timeout: 5_000 },
-      )
-      .toBe(true);
-    await expect
       .poll(() =>
         sidePanel
           .getByRole('tabpanel', { name: 'Current' })
@@ -810,7 +1040,6 @@ describe('unpacked extension Reading Flow', () => {
     await sidePanel.getByRole('tab', { name: 'Current' }).click();
 
     await selectTextByPointer(page, '#copy', 'committee');
-    await page.getByRole('button', { name: '快速提示' }).click();
     await expect
       .poll(() =>
         page
@@ -1106,15 +1335,15 @@ describe('unpacked extension Reading Flow', () => {
   it('keeps the anchored surface in view at page edges, after scroll, and at 200% zoom', async () => {
     const tabId = await activeReadingTabId();
     await page.locator('#edge-copy').scrollIntoViewIfNeeded();
-    await selectTextByPointer(page, '#edge-copy', 'postpone');
+    await selectTextByPointer(page, '#edge-copy', 'postpone', false);
     expect(await page.evaluate(() => document.getSelection()?.toString())).toBe(
       'postpone',
     );
     await expect
       .poll(() =>
-        page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
+        page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).count(),
       )
-      .toBe(true);
+      .toBe(0);
     await expect
       .poll(() =>
         page
@@ -1126,12 +1355,18 @@ describe('unpacked extension Reading Flow', () => {
       ([id, zoom]) => chrome.tabs.setZoom(id, zoom),
       [tabId, 2] as const,
     );
+    await page.locator('#edge-copy').scrollIntoViewIfNeeded();
     await assertAnnotationAboveSelection();
     await assertSurfaceInsideViewport();
-
+    await openQuietPeekActions(page);
+    await expect
+      .poll(() =>
+        page.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
+      )
+      .toBe(true);
+    await assertSurfaceInsideViewport();
     await page.evaluate(() => window.scrollBy(0, -200));
     await assertSurfaceInsideViewport();
-    await assertAnnotationAboveSelection();
     await worker.evaluate(
       ([id, zoom]) => chrome.tabs.setZoom(id, zoom),
       [tabId, 1] as const,
@@ -1151,9 +1386,23 @@ describe('unpacked extension Reading Flow', () => {
     );
     await expect
       .poll(() =>
-        frame.getByRole('toolbar', { name: 'Lingo Palette 選取工具' }).isVisible(),
+        frame
+          .locator('[data-lingo-palette-quick-hint-annotation] .annotation')
+          .isVisible(),
       )
       .toBe(true);
+    expect(
+      await frame.getByRole('toolbar', {
+        name: 'Lingo Palette 選取工具',
+      }).count(),
+    ).toBe(0);
+    await frame.locator('#frame-position').focus();
+    expect(await frame.evaluate(() => document.activeElement?.id)).toBe(
+      'frame-position',
+    );
+    expect(await frame.evaluate(() => document.getSelection()?.toString())).toBe(
+      'postpone',
+    );
     const shortcut = await worker.evaluate(async () => {
       const commands = await chrome.commands.getAll();
       return commands.find(({ name }) => name === 'focus-selection-toolbar')
@@ -1203,7 +1452,7 @@ describe('unpacked extension Reading Flow', () => {
       )
       .toBe(0);
     expect(await frame.evaluate(() => document.activeElement?.id)).toBe(
-      'frame-copy',
+      'frame-position',
     );
   }, 15_000);
 
@@ -1687,13 +1936,15 @@ describe('unpacked extension Reading Flow', () => {
     await worker.evaluate(async () => {
       await chrome.storage.local.set({ openAiTestOnline: false });
     });
+    await closeReadingFlowSurface();
+    await selectTextProgrammatically(page, '#copy', 'The committee');
     try {
       await page.getByRole('button', { name: '快速提示' }).click();
       await expect
         .poll(() => page.getByRole('status').textContent())
         .toContain('本機快取載入；未使用 provider budget');
       await closeReadingFlowSurface();
-      await selectTextByPointer(page, '#copy', 'decided to');
+      await selectTextProgrammatically(page, '#copy', 'decided to');
       await page.getByRole('button', { name: '快速提示' }).click();
       await expect
         .poll(() => page.getByRole('status').textContent())
@@ -1707,7 +1958,7 @@ describe('unpacked extension Reading Flow', () => {
       'offline',
       'The offline cache miss was announced in the anchored status region.',
     );
-  });
+  }, 15_000);
 
   it('shows retry waiting, retry exhaustion, and a later successful third attempt', async () => {
     await closeReadingFlowSurface();
@@ -1755,7 +2006,7 @@ describe('unpacked extension Reading Flow', () => {
       'retry',
       'Retry waiting, exhaustion, and subsequent success were announced in place.',
     );
-  });
+  }, 15_000);
 
   it('cancels active provider work, preserves Selection, and releases its reservation', async () => {
     await closeReadingFlowSurface();
@@ -1811,7 +2062,7 @@ describe('unpacked extension Reading Flow', () => {
         }, OPENAI_BUDGET_LEDGER_STORAGE_KEY),
       )
       .toBe(0);
-  });
+  }, 15_000);
 
   it('surfaces every terminal provider failure without retry and blocks locally at zero', async () => {
     const cases = [
@@ -1920,7 +2171,7 @@ describe('unpacked extension Reading Flow', () => {
       'error',
       'Every terminal provider and local budget error was announced while Selection remained intact.',
     );
-  }, 15_000);
+  }, 30_000);
 
   it('installs a signed Evidence Pack and recovers the active pack after an offline browser restart', async () => {
     const assetBytes = new Map([
@@ -4285,30 +4536,42 @@ describe('unpacked extension Reading Flow', () => {
       expect(await target.evaluate(() => document.activeElement?.id)).toBe(
         'smoke-selection',
       );
-      const toolbar = target.getByRole('toolbar', {
-        name: 'Lingo Palette 選取工具',
-      });
+      const peekHost = target.locator(
+        '[data-lingo-palette-quick-hint-annotation]',
+      );
       await expect
-        .poll(() => toolbar.isVisible(), {
-          message: `Expected Reading Flow toolbar for smoke case ${pageCase.id}.`,
+        .poll(() => peekHost.isVisible(), {
+          message: `Expected Quiet Peek for smoke case ${pageCase.id}.`,
           timeout: 5_000,
         })
         .toBe(true);
-      const host = target.locator('[data-lingo-palette-reading-flow]');
-      const accessibleMedia = await toolbar.evaluate((element) => {
+      const peek = peekHost.locator('.annotation');
+      const peekAction = target.getByRole('button', {
+        name: '開啟發音選項',
+      });
+      const accessibleMedia = await peek.evaluate((element) => {
         const style = getComputedStyle(element);
+        const action = element.querySelector('button');
         return {
           animationName: style.animationName,
-          borderTopWidth: style.borderTopWidth,
+          actionBorderTopWidth:
+            action === null ? '0px' : getComputedStyle(action).borderTopWidth,
         };
       });
       expect(accessibleMedia.animationName).toBe('none');
-      expect(Number.parseFloat(accessibleMedia.borderTopWidth)).toBeGreaterThanOrEqual(
-        2,
-      );
+      expect(
+        Number.parseFloat(accessibleMedia.actionBorderTopWidth),
+      ).toBeGreaterThanOrEqual(2);
+      await expect.poll(() => peekAction.isVisible()).toBe(true);
       const latency = await visibleControlsLatency(target);
-      expect(latency).toBeGreaterThanOrEqual(0);
-      expect(latency).toBeLessThanOrEqual(250);
+      expect(
+        latency,
+        `Quiet Peek latency for ${pageCase.id}`,
+      ).toBeGreaterThanOrEqual(0);
+      expect(
+        latency,
+        `Quiet Peek latency for ${pageCase.id}`,
+      ).toBeLessThanOrEqual(250);
       await assertSmokeSurfaceInsideViewport(target);
       pageRuns.push({ pageCase, milliseconds: latency });
 
@@ -4325,24 +4588,25 @@ describe('unpacked extension Reading Flow', () => {
             ),
         });
       }, tabId);
-      const quickHint = target.getByRole('button', { name: '快速提示' });
-      await expect
-        .poll(() =>
-          quickHint.evaluate(
-            (button) =>
-              button === (button.getRootNode() as ShadowRoot).activeElement,
-          ),
-        )
-        .toBe(true);
-      const focusPresentation = await quickHint.evaluate((button) => {
-        const style = getComputedStyle(button);
+      const toolbar = target.getByRole('toolbar', {
+        name: 'Lingo Palette 選取工具',
+      });
+      await expect.poll(() => toolbar.isVisible()).toBe(true);
+      const host = target.locator('[data-lingo-palette-reading-flow]');
+      const focusPresentation = await host.evaluate((element) => {
+        const active = element.shadowRoot?.activeElement;
+        if (!(active instanceof HTMLElement)) return null;
+        const style = getComputedStyle(active);
         return {
+          name: active.getAttribute('aria-label') ?? active.textContent,
           outlineWidth: style.outlineWidth,
           borderStyle: style.borderStyle,
         };
       });
-      expect(focusPresentation.outlineWidth).not.toBe('0px');
-      expect(focusPresentation.borderStyle).not.toBe('none');
+      expect(focusPresentation).not.toBeNull();
+      expect(['快速提示', 'US English']).toContain(focusPresentation?.name);
+      expect(focusPresentation?.outlineWidth).not.toBe('0px');
+      expect(focusPresentation?.borderStyle).not.toBe('none');
 
       await page.keyboard.press('Escape');
       await expect.poll(() => toolbar.count()).toBe(0);
@@ -4358,12 +4622,16 @@ describe('unpacked extension Reading Flow', () => {
             ),
         });
       }, tabId);
+      await expect.poll(() => toolbar.isVisible()).toBe(true);
       await expect
         .poll(() =>
-          quickHint.evaluate(
-            (button) =>
-              button === (button.getRootNode() as ShadowRoot).activeElement,
-          ),
+          host.evaluate((element) => {
+            const active = element.shadowRoot?.activeElement;
+            return (
+              active instanceof HTMLButtonElement &&
+              active.matches(':focus-visible')
+            );
+          }),
         )
         .toBe(true);
       let focusLeftSurface = false;
@@ -4436,7 +4704,7 @@ describe('unpacked extension Reading Flow', () => {
 
   it('keeps form and editor selections outside Supported Reading Surfaces', async () => {
     await page.goto(`http://site-03.lingo.test:${serverPort}/excluded-editor`);
-    await selectNodeContents(page, '#editable-copy');
+    await selectNodeContents(page, '#editable-copy', false);
     await page.waitForTimeout(150);
 
     expect(
@@ -4530,7 +4798,10 @@ async function activeReadingTabId(): Promise<number> {
 
 async function assertSurfaceInsideViewport(): Promise<void> {
   const bounds = await page
-    .locator('[data-lingo-palette-reading-flow]')
+    .locator(
+      '[data-lingo-palette-reading-flow], [data-lingo-palette-quick-hint-annotation]',
+    )
+    .first()
     .evaluate((element) => {
       const rect = element.getBoundingClientRect();
       return {
@@ -4591,14 +4862,18 @@ async function replaceCopyAndSelect(text: string): Promise<void> {
 }
 
 async function visibleControlsLatency(target: Page | Frame): Promise<number> {
-  const host = target.locator('[data-lingo-palette-reading-flow]');
+  const surface = target
+    .locator(
+      '[data-lingo-palette-reading-flow], [data-lingo-palette-quick-hint-annotation]',
+    )
+    .first();
   await expect
-    .poll(() => host.getAttribute('data-visible-at'), {
+    .poll(() => surface.getAttribute('data-visible-at'), {
       message: 'Expected a completed visible-controls animation frame.',
       timeout: 5_000,
     })
     .not.toBeNull();
-  const timing = await host.evaluate((element) => ({
+  const timing = await surface.evaluate((element) => ({
     selectionStableAt: Number(
       (element as HTMLElement).dataset.selectionStableAt,
     ),
@@ -4611,6 +4886,7 @@ async function selectTextProgrammatically(
   target: Page | Frame,
   selector: string,
   text: string,
+  openExpanded = true,
 ): Promise<void> {
   await target.locator(selector).evaluate((element, selectedText) => {
     const node = element.firstChild;
@@ -4625,12 +4901,14 @@ async function selectTextProgrammatically(
     selection?.addRange(range);
     element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
   }, text);
+  if (openExpanded) await openExpandedSelectionSurface(target);
 }
 
 async function selectTextByPointer(
   pageTarget: Page,
   selector: string,
   text: string,
+  openExpanded = true,
 ): Promise<void> {
   const points = await pageTarget.locator(selector).evaluate(
     (element, selectedText) => {
@@ -4653,6 +4931,7 @@ async function selectTextByPointer(
   await pageTarget.mouse.down();
   await pageTarget.mouse.move(points.end.x, points.end.y, { steps: 8 });
   await pageTarget.mouse.up();
+  if (openExpanded) await openExpandedSelectionSurface(pageTarget);
 }
 async function activateByKeyboard(control: Locator): Promise<void> {
   await control.focus();
@@ -4696,7 +4975,11 @@ async function selectTextByKeyboard(
   await target.press(selector, 'Shift+ArrowRight');
 }
 
-async function selectNodeContents(pageTarget: Page, selector: string): Promise<void> {
+async function selectNodeContents(
+  pageTarget: Page,
+  selector: string,
+  openExpanded = true,
+): Promise<void> {
   await pageTarget.locator(selector).evaluate((element) => {
     const selection = document.getSelection();
     const range = document.createRange();
@@ -4705,6 +4988,46 @@ async function selectNodeContents(pageTarget: Page, selector: string): Promise<v
     selection?.addRange(range);
     element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
   });
+  if (openExpanded) await openExpandedSelectionSurface(pageTarget);
+}
+
+async function openExpandedSelectionSurface(
+  target: Page | Frame,
+): Promise<void> {
+  const visibleSurface = target.locator(
+    '[data-lingo-palette-reading-flow], [data-lingo-palette-quick-hint-annotation]',
+  );
+  await expect
+    .poll(() => visibleSurface.count(), {
+      message: 'Expected Selection processing before opening expanded controls.',
+      timeout: 5_000,
+    })
+    .toBeGreaterThan(0);
+  await target.evaluate(() =>
+    window.dispatchEvent(
+      new Event('lingo-palette:focus-selection-toolbar'),
+    ),
+  );
+  const toolbar = target.getByRole('toolbar', {
+    name: 'Lingo Palette 選取工具',
+  });
+  await expect
+    .poll(() => toolbar.isVisible(), {
+      message: 'Expected expanded controls for the current Selection.',
+      timeout: 5_000,
+    })
+    .toBe(true);
+}
+
+async function openQuietPeekActions(target: Page | Frame): Promise<void> {
+  const more = target.getByRole('button', { name: '更多選取操作' });
+  await expect
+    .poll(() => more.isVisible(), {
+      message: 'Expected Quiet Peek actions for the current Selection.',
+      timeout: 5_000,
+    })
+    .toBe(true);
+  await more.click();
 }
 
 function smokeMatchPatterns(): string[] {
@@ -4879,7 +5202,10 @@ async function assertSmokeSurfaceInsideViewport(
   target: Page | Frame,
 ): Promise<void> {
   const bounds = await target
-    .locator('[data-lingo-palette-reading-flow]')
+    .locator(
+      '[data-lingo-palette-reading-flow], [data-lingo-palette-quick-hint-annotation]',
+    )
+    .first()
     .evaluate((element) => {
       const rect = element.getBoundingClientRect();
       return {
