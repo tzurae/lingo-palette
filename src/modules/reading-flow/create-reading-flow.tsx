@@ -212,11 +212,10 @@ export function createReadingFlow(
     }
 
     const activityKey = JSON.stringify(nextSnapshot.selection);
-    if (
-      focusControls &&
+    const sameSelection =
       priorSnapshot !== null &&
-      JSON.stringify(priorSnapshot.selection) === activityKey
-    ) {
+      JSON.stringify(priorSnapshot.selection) === activityKey;
+    if (focusControls && sameSelection) {
       store.getState().expand('first-action');
       return;
     }
@@ -255,7 +254,9 @@ export function createReadingFlow(
       return;
     }
 
-    store.getState().showPeek();
+    if (!sameSelection || state.surface.mode !== 'expanded') {
+      store.getState().showPeek();
+    }
     if (nextSnapshot.codePointLength <= SELECTION_LIMIT) {
       scheduleAutomaticQuickHint();
     } else {
