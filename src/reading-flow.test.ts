@@ -707,12 +707,48 @@ describe('unpacked extension Reading Flow', () => {
     const pronunciationStatus = pronunciation.locator(
       '.pronunciation-status',
     );
+    await pronunciationStatus.evaluate((element) => {
+      const observed = element as HTMLElement & {
+        observedMessages?: string[];
+        statusObserver?: MutationObserver;
+      };
+      const messages: string[] = [];
+      const capture = () => {
+        const message = element.textContent ?? '';
+        if (message.length > 0) messages.push(message);
+      };
+      observed.observedMessages = messages;
+      observed.statusObserver = new MutationObserver(capture);
+      observed.statusObserver.observe(element, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+      capture();
+    });
     await activateByKeyboard(
       pronunciation.getByRole('button', { name: 'US English' }),
     );
     await expect
-      .poll(() => pronunciationStatus.textContent())
-      .toContain('第 1 次語音嘗試未完成');
+      .poll(() =>
+        pronunciationStatus.evaluate((element) =>
+          (
+            element as HTMLElement & {
+              observedMessages?: string[];
+            }
+          ).observedMessages?.some((message) =>
+            message.includes('第 1 次語音嘗試未完成'),
+          ),
+        ),
+      )
+      .toBe(true);
+    await pronunciationStatus.evaluate((element) => {
+      (
+        element as HTMLElement & {
+          statusObserver?: MutationObserver;
+        }
+      ).statusObserver?.disconnect();
+    });
     await activateByKeyboard(
       pronunciation.getByRole('button', { name: '暫停' }),
     );
