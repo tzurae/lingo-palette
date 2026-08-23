@@ -1,0 +1,105 @@
+name: Draft Extension Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright-core install --with-deps chromium
+      - name: Require tag and package versions to match
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          test "$tag_version" = "$package_version"
+      - run: pnpm typecheck
+      - name: Verify tests, resilience matrix, and release package
+        id: resilience
+        continue-on-error: true
+        run: pnpm resilience:verify
+      - name: Print failed Vitest assertions
+        if: steps.resilience.outcome == 'failure'
+        run: |
+          if test -f .resilience-results/vitest.json; then
+            jq -r '.testResults[] | .assertionResults[] | select(.status == "failed") | .fullName, (.failureMessages[]? // "")' .resilience-results/vitest.json
+          else
+            echo "Vitest JSON report was not created."
+          fi
+      - name: Upload release diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-diagnostics-${{ github.ref_name }}-attempt-${{ github.run_attempt }}
+          path: .resilience-results/vitest.json
+          if-no-files-found: warn
+          include-hidden-files: true
+      - name: Fail after preserving diagnostics
+        if: steps.resilience.outcome == 'failure'
+        run: exit 1
+      - name: Require packaged manifest version to match
+        run: |
+          node -e "const fs=require('node:fs'); const pkg=require('./package.json'); const manifest=JSON.parse(fs.readFileSync('.output/chrome-mv3/manifest.json','utf8')); if(manifest.version!==pkg.version) throw new Error('Packaged manifest version does not match package.json.');"
+      - name: Write release checksums
+        run: sha256sum .output/*-chrome.zip > .output/SHA256SUMS
+      - name: Upload exact release candidate for Google Chrome smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-${{ github.ref_name }}
+          path: |
+            .output/*-chrome.zip
+            .output/SHA256SUMS
+          if-no-files-found: error
+          include-hidden-files: true
+          overwrite: true
+
+  draft-release:
+    name: Create approved Draft pre-release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment:
+      name: release-draft
+    steps:
+      - name: Download Google-Chrome-smoked candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: release-candidate-${{ github.ref_name }}
+          path: release-assets
+      - name: Create reviewable Draft pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release-assets/*-chrome.zip \
+            release-assets/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --draft \
+            --prerelease \
+            --latest=false \
+            --title "Lingo Palette $GITHUB_REF_NAME Beta"
