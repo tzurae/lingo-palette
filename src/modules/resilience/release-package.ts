@@ -230,10 +230,20 @@ function inspectSecrets(
   ];
 }
 
-function inspectNotices(
+function inspectLicensesAndNotices(
   entries: Readonly<Record<string, Uint8Array>>,
 ): ReleasePackageCheck {
   const failures: string[] = [];
+  const projectLicense = decodeEntry(entries, 'LICENSE.txt');
+  if (
+    projectLicense === null ||
+    !projectLicense.includes('Apache License') ||
+    !projectLicense.includes('Version 2.0, January 2004') ||
+    !projectLicense.includes('http://www.apache.org/licenses/')
+  ) {
+    failures.push('LICENSE.txt is missing or is not the Apache License 2.0 text.');
+  }
+
   const notices = decodeEntry(entries, 'THIRD_PARTY_NOTICES.txt');
   if (notices === null) {
     failures.push('THIRD_PARTY_NOTICES.txt is missing or not valid UTF-8.');
@@ -248,7 +258,7 @@ function inspectNotices(
   return check(
     'third-party-notices-complete',
     failures,
-    'Runtime dependencies, bundled evidence sources, and applicable license text are listed.',
+    'The Apache-2.0 project license, runtime dependency notices, and bundled evidence attributions are packaged.',
   );
 }
 
@@ -265,7 +275,7 @@ export function inspectReleasePackage(
       inspectPackRefreshDownloads(entries, manifest),
       apiKeyCheck,
       signingKeyCheck,
-      inspectNotices(entries),
+      inspectLicensesAndNotices(entries),
     ],
   };
 }

@@ -47,6 +47,9 @@ function compliantPackage(
         'Permission is hereby granted, free of charge, to any person obtaining a copy',
       ].join('\n'),
     ),
+    'LICENSE.txt': strToU8(
+      'Apache License\nVersion 2.0, January 2004\nhttp://www.apache.org/licenses/',
+    ),
     ...overrides,
   };
 }
@@ -155,6 +158,10 @@ describe('release package inspection', () => {
     {
       id: 'third-party-notices-complete',
       entries: { 'THIRD_PARTY_NOTICES.txt': strToU8('MIT') },
+    },
+    {
+      id: 'third-party-notices-complete',
+      entries: { 'LICENSE.txt': strToU8('All rights reserved.') },
     },
   ] as const)('fails the $id release gate', ({ id, entries }) => {
     const report = inspectReleasePackage(compliantPackage(entries));

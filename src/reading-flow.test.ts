@@ -4940,10 +4940,23 @@ async function selectTextByPointer(
       const range = element.ownerDocument.createRange();
       range.setStart(node, start);
       range.setEnd(node, start + selectedText.length);
-      const rect = range.getBoundingClientRect();
+      const rects = Array.from(range.getClientRects()).filter(
+        (rect) => rect.width > 0 || rect.height > 0,
+      );
+      const firstRect = rects[0];
+      const lastRect = rects.at(-1);
+      if (firstRect === undefined || lastRect === undefined) {
+        throw new Error(`Could not measure ${selectedText}.`);
+      }
       return {
-        start: { x: rect.left + 1, y: rect.top + rect.height / 2 },
-        end: { x: rect.right - 1, y: rect.top + rect.height / 2 },
+        start: {
+          x: firstRect.left + 1,
+          y: firstRect.top + firstRect.height / 2,
+        },
+        end: {
+          x: lastRect.right - 1,
+          y: lastRect.top + lastRect.height / 2,
+        },
       };
     },
     text,
