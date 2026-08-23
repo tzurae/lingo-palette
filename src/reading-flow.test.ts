@@ -456,6 +456,124 @@ describe('unpacked extension Reading Flow', () => {
     });
   });
 
+  it('keeps quiet annotation text AA-readable over a mid-tone background', async () => {
+    await closeReadingFlowSurface();
+    await page.evaluate(() => {
+      const mediumCopy = document.createElement('p');
+      mediumCopy.id = 'medium-copy';
+      mediumCopy.textContent = 'They decided to postpone the vote.';
+      Object.assign(mediumCopy.style, {
+        boxSizing: 'border-box',
+        width: '420px',
+        marginTop: '48px',
+        padding: '40px 16px 12px',
+        background: '#7d7d7d',
+        color: '#fff',
+      });
+      document.querySelector('main')?.prepend(mediumCopy);
+    });
+    await selectTextByPointer(page, '#medium-copy', 'postpone', false);
+    const annotation = page.locator(
+      '[data-lingo-palette-quick-hint-annotation] .annotation',
+    );
+    await expect
+      .poll(() => annotation.getAttribute('data-ink'))
+      .toBe('dark');
+    const presentation = await annotation.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        backgroundColor: style.backgroundColor,
+        color: style.color,
+      };
+    });
+    expect(presentation).toEqual({
+      backgroundColor: 'rgba(0, 0, 0, 0)',
+      color: 'rgb(51, 65, 85)',
+    });
+    await page.evaluate(() => {
+      document.getSelection()?.removeAllRanges();
+      document.querySelector('#medium-copy')?.remove();
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    });
+  });
+
+  it('isolates Selection styling from hostile page tokens and root font sizes', async () => {
+    await closeReadingFlowSurface();
+    await page.evaluate(() => {
+      const hostileStyles = document.createElement('style');
+      hostileStyles.id = 'hostile-selection-styles';
+      hostileStyles.textContent = `
+        * {
+          --spacing: 99px;
+          --color-brand: hotpink;
+          --color-ink: lime;
+          --tw-border-style: dashed;
+          --tw-leading: 9;
+          color-scheme: dark !important;
+          font: 48px/3 serif !important;
+        }
+      `;
+      document.head.append(hostileStyles);
+    });
+    await selectTextByPointer(page, '#copy', 'postpone');
+    const host = page.locator('[data-lingo-palette-reading-flow]');
+    const presentations = [];
+    for (const rootFontSize of [10, 16, 32]) {
+      await page.evaluate(
+        (fontSize) => {
+          document.documentElement.style.fontSize = `${fontSize}px`;
+        },
+        rootFontSize,
+      );
+      presentations.push(
+        await host.evaluate((element) => {
+          const shadow = element.shadowRoot;
+          const wrapper = shadow?.querySelector('.expanded-host');
+          const surface = shadow?.querySelector('.expanded-surface');
+          const primary = shadow?.querySelector('.primary');
+          if (
+            !(wrapper instanceof HTMLElement) ||
+            !(surface instanceof HTMLElement) ||
+            !(primary instanceof HTMLButtonElement)
+          ) {
+            throw new Error('Missing expanded Selection elements.');
+          }
+          const surfaceStyle = getComputedStyle(surface);
+          const primaryStyle = getComputedStyle(primary);
+          return {
+            width: surface.getBoundingClientRect().width,
+            padding: surfaceStyle.padding,
+            fontSize: surfaceStyle.fontSize,
+            lineHeight: surfaceStyle.lineHeight,
+            color: surfaceStyle.color,
+            backgroundColor: surfaceStyle.backgroundColor,
+            borderStyle: surfaceStyle.borderStyle,
+            colorScheme: getComputedStyle(wrapper).colorScheme,
+            primaryBackground: primaryStyle.backgroundColor,
+          };
+        }),
+      );
+    }
+    expect(presentations).toEqual(
+      Array.from({ length: 3 }, () => ({
+        width: 320,
+        padding: '12px',
+        fontSize: '14px',
+        lineHeight: '20.3px',
+        color: 'rgb(23, 32, 51)',
+        backgroundColor: 'rgb(255, 255, 255)',
+        borderStyle: 'solid',
+        colorScheme: 'light',
+        primaryBackground: 'rgb(29, 78, 216)',
+      })),
+    );
+    await page.evaluate(() => {
+      document.documentElement.style.removeProperty('font-size');
+      document.querySelector('#hostile-selection-styles')?.remove();
+    });
+    await closeReadingFlowSurface();
+  });
+
   it('cancels a pending automatic Quick Hint when the Selection collapses', async () => {
     await closeReadingFlowSurface();
     await worker.evaluate(async () => {
@@ -1331,6 +1449,58 @@ describe('unpacked extension Reading Flow', () => {
           .isVisible(),
       )
       .toBe(true);
+    await settings.close();
+  });
+
+  it('preserves Options heading metrics after enabling Tailwind Preflight', async () => {
+    const settings = await context.newPage();
+    await settings.goto(`${extensionOriginFrom(worker)}/options.html`);
+    const metrics = await settings.evaluate(() => {
+      const headings = {
+        h1: document.querySelector('h1'),
+        h2: document.querySelector('h2'),
+        h3: document.querySelector('section > div:not(.disclosure) > h3'),
+        disclosureH3: document.querySelector('.disclosure h3'),
+      };
+      return Object.fromEntries(
+        Object.entries(headings).map(([name, heading]) => {
+          if (!(heading instanceof HTMLElement)) {
+            throw new Error(`Missing ${name} in Settings.`);
+          }
+          const style = getComputedStyle(heading);
+          return [
+            name,
+            {
+              fontSize: style.fontSize,
+              marginTop: style.marginTop,
+              marginBottom: style.marginBottom,
+            },
+          ];
+        }),
+      );
+    });
+    expect(metrics).toEqual({
+      h1: {
+        fontSize: '32px',
+        marginTop: '21.44px',
+        marginBottom: '21.44px',
+      },
+      h2: {
+        fontSize: '24px',
+        marginTop: '19.92px',
+        marginBottom: '19.92px',
+      },
+      h3: {
+        fontSize: '18.72px',
+        marginTop: '18.72px',
+        marginBottom: '18.72px',
+      },
+      disclosureH3: {
+        fontSize: '18.72px',
+        marginTop: '0px',
+        marginBottom: '18.72px',
+      },
+    });
     await settings.close();
   });
 

@@ -1,372 +1,276 @@
-:root {
-  color-scheme: light;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #f8fafc;
-  color: #172033;
-}
+@import "tailwindcss" source(none);
+@import "../../src/styles/theme.css";
+@source "./index.html";
+@source "./main.ts";
 
-* {
-  box-sizing: border-box;
-}
+@layer base {
+  :root {
+    @apply bg-canvas font-sans text-ink;
+    color-scheme: light;
+  }
 
+  body {
+    @apply m-0 min-w-70 text-ui;
+  }
+
+  h1,
+  h2,
+  h3,
+  p {
+    @apply mt-0;
+  }
+
+  h1 {
+    @apply mb-0 text-display font-bold;
+  }
+
+  h2 {
+    @apply mb-[16.6px] text-heading font-bold;
+  }
+
+  h3 {
+    @apply mb-[6px] text-[16px] font-bold;
+  }
+
+  p {
+    @apply mb-[15px];
+  }
+
+  ul,
+  ol {
+    @apply m-0 pl-[22px];
+  }
+
+  li + li {
+    @apply mt-[10px];
+  }
+
+  li p {
+    @apply mt-1 mb-0;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    all: revert;
+    box-sizing: border-box;
+  }
+
+  button:focus-visible,
+  [role="tabpanel"]:focus-visible {
+    @apply outline-3 outline-focus -outline-offset-3;
+  }
+}
 body {
-  margin: 0;
-  min-width: 280px;
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: var(--text-ui);
+  line-height: var(--text-ui--line-height);
 }
 
-header {
-  padding: 20px 18px 12px;
-  background: #172554;
-  color: #fff;
-}
 
-.eyebrow {
-  margin: 0 0 2px;
-  color: #bfdbfe;
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
+@layer components {
+  header {
+    @apply bg-brand-deep pt-5 pr-[18px] pb-3 pl-[18px] text-ink-inverse;
+  }
 
-h1,
-h2,
-h3,
-p {
-  margin-top: 0;
-}
+  .eyebrow {
+    @apply mt-0 mb-[2px] text-[12px] font-eyebrow tracking-eyebrow text-brand-muted uppercase;
+  }
 
-h1 {
-  margin-bottom: 0;
-  font-size: 24px;
-}
+  [role="tablist"] {
+    @apply grid grid-cols-4 border-b border-border-subtle bg-surface;
+  }
 
-h2 {
-  font-size: 20px;
-}
+  [role="tab"] {
+    @apply min-h-11 cursor-pointer rounded-none border-0 bg-surface text-ink font-action;
+    font: inherit;
+  }
 
-h3 {
-  margin-bottom: 6px;
-  font-size: 16px;
-}
+  [role="tab"][aria-selected="true"] {
+    @apply inset-shadow-active-tab text-brand-strong;
+  }
 
-[role="tablist"] {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  border-bottom: 1px solid #94a3b8;
-  background: #fff;
-}
+  main {
+    @apply p-[18px];
+  }
 
-[role="tab"],
-.actions button {
-  min-height: 44px;
-  border: 0;
-  border-radius: 0;
-  background: #fff;
-  color: #172033;
-  cursor: pointer;
-  font: inherit;
-  font-weight: 700;
-}
+  [role="tabpanel"][hidden] {
+    display: none;
+  }
 
-[role="tab"][aria-selected="true"] {
-  box-shadow: inset 0 -4px #1d4ed8;
-  color: #1e40af;
-}
+  .deep-dive-result,
+  .request {
+    @apply grid gap-[14px];
+  }
 
-button:focus-visible,
-[role="tabpanel"]:focus-visible {
-  outline: 3px solid #f59e0b;
-  outline-offset: -3px;
-}
+  .deep-dive-result > section,
+  .request {
+    @apply rounded-card border border-border bg-surface p-[14px];
+  }
 
-main {
-  padding: 18px;
-}
+  .selection {
+    @apply border-l-4 border-l-brand-accent bg-brand-soft p-3 [overflow-wrap:anywhere];
+  }
 
-[role="tabpanel"][hidden] {
-  display: none;
-}
+  .pattern {
+    @apply mb-2 inline-block rounded-[5px] bg-code px-2 py-1 font-mono font-action;
+  }
 
-.deep-dive-result,
-.request {
-  display: grid;
-  gap: 14px;
-}
+  .lookup-records {
+    @apply grid list-none gap-[14px] p-0;
+  }
 
-.deep-dive-result > section,
-.request {
-  padding: 14px;
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  background: #fff;
-}
+  .lookup-record,
+  .learning-item,
+  .merge-suggestion,
+  .learning-mutation {
+    @apply grid min-w-0 gap-[10px] rounded-card border border-border bg-surface p-[14px] [overflow-wrap:anywhere];
+  }
 
-.selection {
-  padding: 12px;
-  border-left: 4px solid #2563eb;
-  background: #eff6ff;
-  overflow-wrap: anywhere;
-}
+  .lookup-record time {
+    @apply text-meta text-ink-muted;
+  }
 
-.pattern {
-  display: inline-block;
-  margin-bottom: 8px;
-  padding: 4px 8px;
-  border-radius: 5px;
-  background: #e2e8f0;
-  font-family: ui-monospace, "Cascadia Code", monospace;
-  font-weight: 700;
-}
+  .lookup-record .deep-dive-result {
+    @apply border-t border-border pt-1;
+  }
 
-ul,
-ol {
-  margin: 0;
-  padding-left: 22px;
-}
+  .request {
+    @apply mt-4 border-l-[5px] border-l-brand-accent;
+  }
 
-li + li {
-  margin-top: 10px;
-}
+  .request-failed,
+  .request-cancelled {
+    @apply border-l-warning;
+  }
 
-li p {
-  margin: 4px 0 0;
-}
+  .request-message {
+    @apply mb-0;
+  }
 
-.lookup-records {
-  display: grid;
-  gap: 14px;
-  padding: 0;
-  list-style: none;
-}
+  .actions {
+    @apply flex gap-2;
+  }
 
-.lookup-record {
-  display: grid;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  background: #fff;
-}
+  .actions button {
+    @apply min-h-11 cursor-pointer rounded-control border-2 border-brand bg-brand px-[14px] py-2 font-action text-ink-inverse;
+    font: inherit;
+  }
 
-.lookup-record time {
-  color: #475569;
-  font-size: 13px;
-}
+  .learning-items,
+  .encounters,
+  .learning-history ol {
+    @apply grid list-none gap-3 p-0;
+  }
 
-.lookup-record .deep-dive-result {
-  padding-top: 4px;
-  border-top: 1px solid #cbd5e1;
-}
+  .productive-intent {
+    @apply flex items-center gap-2 font-action;
+  }
 
-.request {
-  margin-top: 16px;
-  border-left: 5px solid #2563eb;
-}
+  .productive-intent input {
+    @apply size-5;
+  }
 
-.request-failed,
-.request-cancelled {
-  border-left-color: #b45309;
-}
+  .encounter,
+  .suggestion-context {
+    @apply grid gap-[6px] border-t border-border pt-[10px];
+  }
 
-.request-message {
-  margin-bottom: 0;
-}
+  .encounter-context {
+    @apply border-l-4 border-l-brand-accent bg-brand-soft p-2;
+  }
 
-.actions {
-  display: flex;
-  gap: 8px;
-}
+  .reclassification {
+    @apply flex flex-wrap gap-2;
+  }
 
-.actions button {
-  padding: 8px 14px;
-  border: 2px solid #1d4ed8;
-  border-radius: 7px;
-  background: #1d4ed8;
-  color: #fff;
-}
+  .reclassification select {
+    @apply min-w-0 max-w-full;
+  }
 
-.learning-items,
-.encounters,
-.learning-history ol {
-  display: grid;
-  gap: 12px;
-  padding: 0;
-  list-style: none;
-}
+  .merge-suggestions,
+  .learning-history {
+    @apply mt-6 grid gap-3;
+  }
 
-.learning-item,
-.merge-suggestion,
-.learning-mutation {
-  display: grid;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  background: #fff;
-}
+  .merge-suggestion {
+    @apply border-l-[5px] border-l-warning;
+  }
 
-.productive-intent {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-weight: 700;
-}
+  .learning-mutation {
+    @apply bg-canvas;
+  }
 
-.productive-intent input {
-  width: 20px;
-  height: 20px;
-}
+  .lookup-record > button,
+  .learning-item button,
+  .learning-history button,
+  .reclassification button {
+    @apply justify-self-start px-3 py-2;
+  }
 
-.encounter,
-.suggestion-context {
-  display: grid;
-  gap: 6px;
-  padding-top: 10px;
-  border-top: 1px solid #cbd5e1;
-}
+  .review-card,
+  .review-summary,
+  .review-schedule,
+  .review-evidence-record {
+    @apply grid gap-3 rounded-card border border-border bg-surface p-[14px];
+  }
 
-.encounter-context {
-  padding: 8px;
-  border-left: 4px solid #2563eb;
-  background: #eff6ff;
-}
+  .review-card {
+    @apply border-l-[5px] border-l-brand;
+  }
 
-.reclassification {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
+  .review-card .context-quote {
+    @apply border-l-4 border-l-border-strong bg-canvas p-[10px];
+  }
 
-.reclassification select {
-  min-width: 0;
-  max-width: 100%;
-}
+  .review-card button,
+  .review-summary button,
+  .review-schedule button {
+    @apply min-h-11 justify-self-start px-[14px] py-2;
+  }
 
-.merge-suggestions,
-.learning-history {
-  display: grid;
-  gap: 12px;
-  margin-top: 24px;
-}
+  .review-card label {
+    @apply font-action;
+  }
 
-.merge-suggestion {
-  border-left: 5px solid #b45309;
-}
+  .review-card textarea {
+    @apply box-border min-h-21 w-full resize-y rounded-control border-2 border-border-strong p-[10px];
+    font: inherit;
+  }
 
-.learning-mutation {
-  background: #f8fafc;
-}
+  .review-evidence ol {
+    @apply grid gap-[10px] pl-5;
+  }
 
-.lookup-record > button,
-.learning-item button,
-.learning-history button,
-.reclassification button {
-  justify-self: start;
-  padding: 8px 12px;
-}
+  .review-evidence-record {
+    @apply [overflow-wrap:anywhere];
+  }
 
-.review-card,
-.review-summary,
-.review-schedule,
-.review-evidence-record {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  background: #fff;
-}
+  .review-fluency-actions {
+    @apply flex-wrap;
+  }
 
-.review-card {
-  border-left: 5px solid #1d4ed8;
-}
+  .review-answer {
+    @apply border-t border-border pt-3;
+  }
 
-.review-card .context-quote {
-  padding: 10px;
-  border-left: 4px solid #64748b;
-  background: #f8fafc;
-}
+  .review-schedules,
+  .review-evidence {
+    @apply mt-[18px] grid gap-[10px];
+  }
 
-.review-card button,
-.review-summary button,
-.review-schedule button {
-  min-height: 44px;
-  justify-self: start;
-  padding: 8px 14px;
-}
+  .review-schedule p {
+    @apply mb-0;
+  }
 
-.review-card label {
-  font-weight: 700;
-}
+  .review-error,
+  .error {
+    @apply font-action text-danger;
+  }
 
-.review-card textarea {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 84px;
-  padding: 10px;
-  border: 2px solid #64748b;
-  border-radius: 7px;
-  font: inherit;
-  resize: vertical;
-}
-
-.review-evidence ol {
-  display: grid;
-  gap: 10px;
-  padding-left: 20px;
-}
-
-.review-evidence-record {
-  overflow-wrap: anywhere;
-}
-
-.review-fluency-actions {
-  flex-wrap: wrap;
-}
-
-.review-answer {
-  padding-top: 12px;
-  border-top: 1px solid #cbd5e1;
-}
-
-.review-schedules,
-.review-evidence {
-  display: grid;
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.review-schedule p {
-  margin-bottom: 0;
-}
-
-.review-error {
-  color: #991b1b;
-  font-weight: 700;
-}
-
-.error {
-  color: #991b1b;
-  font-weight: 700;
-}
-
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+  .visually-hidden {
+    @apply absolute -m-px size-px overflow-hidden border-0 p-0 whitespace-nowrap [clip:rect(0,0,0,0)];
+  }
 }
 
 @media (forced-colors: active) {
