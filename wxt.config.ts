@@ -1,7 +1,16 @@
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'wxt';
 
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
+  vite: () => ({
+    plugins: [tailwindcss()],
+  }),
+  react: {
+    vite: {
+      jsxRuntime: 'classic',
+    },
+  },
   manifest: {
     name: 'Lingo Palette',
     description: 'Understand selected English without leaving the reading flow.',

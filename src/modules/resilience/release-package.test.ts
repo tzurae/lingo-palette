@@ -34,6 +34,10 @@ function compliantPackage(
     'THIRD_PARTY_NOTICES.txt': strToU8(
       [
         '@noble/ed25519 3.1.0',
+        '@floating-ui/core 1.8.0',
+        '@floating-ui/dom 1.8.0',
+        '@floating-ui/utils 0.2.12',
+        'zustand 5.0.15',
         'react 19.2.8',
         'react-dom 19.2.8',
         'scheduler 0.27.0',
@@ -42,6 +46,9 @@ function compliantPackage(
         'Leipzig Corpora Collection',
         'Permission is hereby granted, free of charge, to any person obtaining a copy',
       ].join('\n'),
+    ),
+    'LICENSE.txt': strToU8(
+      'Apache License\nVersion 2.0, January 2004\nhttp://www.apache.org/licenses/',
     ),
     ...overrides,
   };
@@ -151,6 +158,10 @@ describe('release package inspection', () => {
     {
       id: 'third-party-notices-complete',
       entries: { 'THIRD_PARTY_NOTICES.txt': strToU8('MIT') },
+    },
+    {
+      id: 'third-party-notices-complete',
+      entries: { 'LICENSE.txt': strToU8('All rights reserved.') },
     },
   ] as const)('fails the $id release gate', ({ id, entries }) => {
     const report = inspectReleasePackage(compliantPackage(entries));
