@@ -807,6 +807,9 @@ describe('unpacked extension Reading Flow', () => {
         openAiTestRequests: [],
       });
     }, firstResult);
+    let sidePanel = await context.newPage();
+    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
+
 
     await selectTextByPointer(page, '#copy', 'postpone');
     await activateByKeyboard(
@@ -816,8 +819,6 @@ describe('unpacked extension Reading Flow', () => {
       .poll(() => page.getByRole('status').textContent())
       .toContain('Deep Dive 已在 Side Panel 開始');
 
-    let sidePanel = await context.newPage();
-    await sidePanel.goto(`${extensionOriginFrom(worker)}/sidepanel.html`);
     await expect
       .poll(
         () =>
