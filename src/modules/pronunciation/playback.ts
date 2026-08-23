@@ -156,6 +156,17 @@ export type PronunciationPlaybackState = {
   usage: ProviderUsage | null;
   attempts: number;
 };
+export function isPronunciationPlaybackActive(
+  state: Pick<PronunciationPlaybackState, 'status'>,
+): boolean {
+  return (
+    state.status === 'discovering' ||
+    state.status === 'generating' ||
+    state.status === 'playing' ||
+    state.status === 'paused'
+  );
+}
+
 
 export type PronunciationPlaybackDependencies = {
   countTokens(text: string): number;

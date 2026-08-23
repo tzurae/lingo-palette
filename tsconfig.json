@@ -6,6 +6,7 @@
     "exactOptionalPropertyTypes": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
-    "useUnknownInCatchVariables": true
+    "useUnknownInCatchVariables": true,
+    "jsx": "react-jsx"
   }
 }

@@ -2,6 +2,11 @@ import { defineConfig } from 'wxt';
 
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
+  react: {
+    vite: {
+      jsxRuntime: 'classic',
+    },
+  },
   manifest: {
     name: 'Lingo Palette',
     description: 'Understand selected English without leaving the reading flow.',
