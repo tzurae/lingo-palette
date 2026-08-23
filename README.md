@@ -4,7 +4,7 @@ Lingo Palette 是一個 Chrome Desktop 擴充套件，協助繁體中文使用�
 
 ## Beta 狀態
 
-`0.1.0` 是供實際使用與跨電腦測試的 GitHub Beta Release，不是 Chrome Web Store 版本。Unpacked extension 不會自動更新；每台電腦需要手動下載、安裝與更新。
+`0.1.1` 是供實際使用與跨電腦測試的 GitHub Beta Release，不是 Chrome Web Store 版本。Unpacked extension 不會自動更新；每台電腦需要手動下載、安裝與更新。
 
 ## 主要功能
 
@@ -18,7 +18,7 @@ Lingo Palette 是一個 Chrome Desktop 擴充套件，協助繁體中文使用�
 ## 從 GitHub Release 安裝
 
 1. 打開本 repository 的 [Releases](https://github.com/tzurae/lingo-palette/releases)。
-2. 下載 `lingo-palette-0.1.0-chrome.zip`。
+2. 下載 `lingo-palette-0.1.1-chrome.zip`。
 3. 對照同一個 Release 內的 `SHA256SUMS` 驗證下載檔案。
 4. 將 ZIP 解壓縮到固定資料夾，例如 `~/Applications/Lingo Palette Beta/`。
 5. 在 Chrome 打開 `chrome://extensions`。
@@ -30,13 +30,13 @@ Lingo Palette 是一個 Chrome Desktop 擴充套件，協助繁體中文使用�
 macOS／Linux：
 
 ```bash
-shasum -a 256 lingo-palette-0.1.0-chrome.zip
+shasum -a 256 lingo-palette-0.1.1-chrome.zip
 ```
 
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\\lingo-palette-0.1.0-chrome.zip -Algorithm SHA256
+Get-FileHash .\lingo-palette-0.1.1-chrome.zip -Algorithm SHA256
 ```
 
 輸出的 SHA-256 必須與 `SHA256SUMS` 內該 ZIP 的值一致。

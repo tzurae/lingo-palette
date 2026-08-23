@@ -59,6 +59,10 @@ declare const chrome: typeof browser;
 const executeFile = promisify(execFile);
 
 const extensionPath = resolve('.output/chrome-mv3');
+const testBrowserLaunch = {
+  channel: 'chromium' as const,
+  headless: process.env.WXT_TEST_HEADED !== 'true',
+};
 type SmokeFlowName = (typeof SMOKE_FLOW_NAMES)[number];
 type SmokeAnnouncementState = (typeof SMOKE_ANNOUNCEMENT_STATES)[number];
 type SmokeExcludedSurfaceKind =
@@ -153,8 +157,7 @@ beforeAll(async () => {
 
   profilePath = await mkdtemp(join(tmpdir(), 'lingo-palette-'));
   context = await chromium.launchPersistentContext(profilePath, {
-    channel: 'chromium',
-    headless: process.env.WXT_TEST_HEADED !== 'true',
+    ...testBrowserLaunch,
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,
@@ -2260,7 +2263,7 @@ describe('unpacked extension Reading Flow', () => {
     await settings.close();
     await context.close();
     context = await chromium.launchPersistentContext(profilePath, {
-      headless: false,
+      ...testBrowserLaunch,
       offline: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
@@ -2359,7 +2362,7 @@ describe('unpacked extension Reading Flow', () => {
 
     await context.close();
     context = await chromium.launchPersistentContext(profilePath, {
-      headless: false,
+      ...testBrowserLaunch,
       offline: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
@@ -2701,7 +2704,7 @@ describe('unpacked extension Reading Flow', () => {
     await sidePanel.close();
     await context.close();
     context = await chromium.launchPersistentContext(profilePath, {
-      headless: false,
+      ...testBrowserLaunch,
       offline: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
@@ -2955,7 +2958,7 @@ describe('unpacked extension Reading Flow', () => {
     await sidePanel.close();
     await context.close();
     context = await chromium.launchPersistentContext(profilePath, {
-      headless: false,
+      ...testBrowserLaunch,
       offline: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
@@ -3540,7 +3543,7 @@ describe('unpacked extension Reading Flow', () => {
     await sidePanel.close();
     await context.close();
     context = await chromium.launchPersistentContext(profilePath, {
-      headless: false,
+      ...testBrowserLaunch,
       offline: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
@@ -3878,7 +3881,7 @@ describe('unpacked extension Reading Flow', () => {
     const restartExtension = async () => {
       await context.close();
       context = await chromium.launchPersistentContext(profilePath!, {
-        headless: false,
+        ...testBrowserLaunch,
         args: [
           `--disable-extensions-except=${extensionPath}`,
           `--load-extension=${extensionPath}`,

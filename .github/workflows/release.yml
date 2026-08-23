@@ -37,7 +37,28 @@ jobs:
           test "$tag_version" = "$package_version"
       - run: pnpm typecheck
       - name: Verify tests, resilience matrix, and release package
+        id: resilience
+        continue-on-error: true
         run: pnpm resilience:verify
+      - name: Print failed Vitest assertions
+        if: steps.resilience.outcome == 'failure'
+        run: |
+          if test -f .resilience-results/vitest.json; then
+            jq -r '.testResults[] | .assertionResults[] | select(.status == "failed") | .fullName, (.failureMessages[]? // "")' .resilience-results/vitest.json
+          else
+            echo "Vitest JSON report was not created."
+          fi
+      - name: Upload release diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-diagnostics-${{ github.ref_name }}-attempt-${{ github.run_attempt }}
+          path: .resilience-results/vitest.json
+          if-no-files-found: warn
+          include-hidden-files: true
+      - name: Fail after preserving diagnostics
+        if: steps.resilience.outcome == 'failure'
+        run: exit 1
       - name: Require packaged manifest version to match
         run: |
           node -e "const fs=require('node:fs'); const pkg=require('./package.json'); const manifest=JSON.parse(fs.readFileSync('.output/chrome-mv3/manifest.json','utf8')); if(manifest.version!==pkg.version) throw new Error('Packaged manifest version does not match package.json.');"
@@ -52,6 +73,7 @@ jobs:
             .output/SHA256SUMS
           if-no-files-found: error
           include-hidden-files: true
+          overwrite: true
 
   draft-release:
     name: Create approved Draft pre-release
