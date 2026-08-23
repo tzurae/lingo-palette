@@ -18,10 +18,12 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
+    "@floating-ui/dom": "^1.8.0",
     "@noble/ed25519": "3.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@msgpack/msgpack": "3.1.2",
@@ -34,6 +36,7 @@
     "playwright-core": "^1.62.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
+    "web-ext": "^9.4.0",
     "wxt": "^0.21.3"
   }
 }

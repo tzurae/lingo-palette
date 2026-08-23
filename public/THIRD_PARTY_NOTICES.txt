@@ -13,6 +13,18 @@ Copyright (c) 2019 Paul Miller (https://paulmillr.com)
 License: MIT
 Homepage: https://paulmillr.com/noble/
 
+@floating-ui/core 1.8.0
+@floating-ui/dom 1.8.0
+@floating-ui/utils 0.2.12
+Copyright (c) 2021-present Floating UI contributors
+License: MIT
+Homepage: https://floating-ui.com/
+
+zustand 5.0.15
+Copyright (c) 2019 Paul Henschel
+License: MIT
+Homepage: https://github.com/pmndrs/zustand
+
 react 19.2.8
 react-dom 19.2.8
 scheduler 0.27.0

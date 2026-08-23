@@ -1,0 +1,335 @@
+:host {
+  color-scheme: normal;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-canvas: #f8fafc;
+  --color-surface: #fff;
+  --color-ink: #172033;
+  --color-ink-subtle: #334155;
+  --color-ink-inverse: #fff;
+  --color-brand: #1d4ed8;
+  --color-brand-soft: #eff6ff;
+  --color-brand-selected: #dbeafe;
+  --color-border: #cbd5e1;
+  --color-border-dark: #475569;
+  --color-danger: #991b1b;
+  --color-focus: #f59e0b;
+  --color-annotation-dark: #0f172a;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.expanded-host,
+.peek-host {
+  pointer-events: none;
+}
+
+.expanded-surface {
+  pointer-events: auto;
+  box-sizing: border-box;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--color-border-dark);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 8px 28px rgb(15 23 42 / 24%);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.permission-copy,
+.status,
+.error {
+  margin: 8px 0 0;
+}
+
+.expanded-surface button {
+  min-height: 36px;
+  padding: 1px 6px;
+  cursor: pointer;
+  border: 1px solid var(--color-border-dark);
+  border-radius: 7px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: inherit;
+}
+
+.expanded-surface button:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.expanded-surface button:disabled,
+.expanded-surface button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: .58;
+}
+
+.primary,
+.secondary {
+  width: 100%;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-weight: 700;
+}
+
+.primary {
+  border-color: var(--color-brand);
+  background: var(--color-brand);
+  color: var(--color-ink-inverse);
+}
+
+.permission-copy + .primary {
+  margin-top: 10px;
+}
+
+.analysis-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.close {
+  min-width: 48px;
+}
+
+.error {
+  color: var(--color-danger);
+  font-weight: 650;
+}
+
+.result {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 7px;
+  background: var(--color-brand-soft);
+}
+
+.pronunciation {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.pronunciation-title {
+  font-size: 13px;
+}
+
+.pronunciation-varieties,
+.pronunciation-playback-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pronunciation-variety[aria-pressed="true"] {
+  border-color: var(--color-brand);
+  background: var(--color-brand-selected);
+}
+
+.pronunciation-progress {
+  width: 100%;
+  accent-color: var(--color-brand);
+}
+
+.pronunciation-status,
+.status {
+  margin: 0;
+  color: var(--color-ink-subtle);
+  font-size: 12px;
+  line-height: 1.15;
+}
+
+.status:not(:empty) {
+  max-height: 4.35em;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.peek-host {
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  font: 12px/1.15 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.annotation {
+  --peek-ink: var(--color-ink-subtle);
+  --peek-outline: rgb(255 255 255 / 92%);
+  --peek-outline-solid: var(--color-surface);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  max-width: min(320px, calc(100vw - 16px));
+  background: transparent;
+  color: var(--peek-ink);
+  white-space: nowrap;
+}
+
+.peek-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.annotation[data-ink="light"] {
+  --peek-ink: var(--color-canvas);
+  --peek-outline: rgb(15 23 42 / 94%);
+  --peek-outline-solid: var(--color-annotation-dark);
+}
+
+.annotation-copy {
+  min-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+  text-overflow: ellipsis;
+}
+
+.annotation-copy strong {
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.15;
+  font-weight: 650;
+  letter-spacing: .003em;
+  -webkit-text-stroke: .3px var(--peek-outline);
+  paint-order: stroke fill;
+  text-shadow: 0 0 1px var(--peek-outline);
+}
+
+.annotation-actions {
+  display: flex;
+  flex: none;
+  gap: 1px;
+  pointer-events: auto;
+}
+
+.peek-action {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  cursor: pointer;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+}
+
+.peek-action:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.peek-action:active {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.peek-action:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 1px var(--peek-outline-solid);
+}
+
+.peek-action svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 1px var(--peek-outline-solid));
+}
+
+.annotation[data-pending] strong {
+  letter-spacing: .16em;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .expanded-surface {
+    animation: lingo-palette-in 100ms ease-out;
+  }
+
+  .annotation {
+    animation: lingo-palette-annotation-in 120ms ease-out;
+  }
+
+  .annotation[data-pending] strong {
+    animation: lingo-palette-pending 900ms ease-in-out infinite alternate;
+  }
+}
+
+@keyframes lingo-palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+@keyframes lingo-palette-annotation-in {
+  from {
+    opacity: 0;
+    transform: translateY(1px);
+  }
+}
+
+@keyframes lingo-palette-pending {
+  from { opacity: .62; }
+  to { opacity: 1; }
+}
+
+@media (forced-colors: active) {
+  .expanded-surface,
+  .expanded-surface button {
+    border: 2px solid ButtonText;
+  }
+
+  .annotation {
+    --peek-ink: CanvasText;
+    --peek-outline: transparent;
+    --peek-outline-solid: Canvas;
+    color: CanvasText;
+  }
+
+  .peek-action {
+    border: 2px solid ButtonText;
+  }
+
+  .annotation-copy strong {
+    -webkit-text-stroke: 0;
+    text-shadow: none;
+  }
+
+  .peek-action svg {
+    filter: none;
+  }
+}
