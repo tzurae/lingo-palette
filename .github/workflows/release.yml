@@ -63,7 +63,12 @@ jobs:
         run: |
           node -e "const fs=require('node:fs'); const pkg=require('./package.json'); const manifest=JSON.parse(fs.readFileSync('.output/chrome-mv3/manifest.json','utf8')); if(manifest.version!==pkg.version) throw new Error('Packaged manifest version does not match package.json.');"
       - name: Write release checksums
-        run: sha256sum .output/*-chrome.zip > .output/SHA256SUMS
+        working-directory: .output
+        run: |
+          sha256sum *-chrome.zip > SHA256SUMS
+          while read -r _ release_asset; do
+            test "$release_asset" = "$(basename "$release_asset")"
+          done < SHA256SUMS
       - name: Upload exact release candidate for Google Chrome smoke
         uses: actions/upload-artifact@v4
         with:
